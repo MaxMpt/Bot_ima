@@ -22,43 +22,36 @@ import urllib3
 from urllib.parse import quote
 from openpyxl import Workbook
 
+import os
+from dotenv import load_dotenv
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ====================== НАСТРОЙКИ ======================
-BOT_TOKEN = "8483231522:AAHSdAqX1HhtebQK-h1vfKaHGmu-h-ClyVA"
-ADMIN_IDS = [721557436, 1211351882]
+load_dotenv()
 
-GITHUB_TOKEN = "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"
-GITHUB_REPO = "MaxMpt/vpn-subscription"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 
-INSTRUCTION_ANDROID = "Инструкция Android.docx"
-INSTRUCTION_IOS = "Инструкция IOS.docx"
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_REPO = os.getenv("GITHUB_REPO")
 
-SERVERS = [
-    {"ip": "195.63.144.164", "label": "Amsterdam-3",
-     "url": "https://195.63.144.164:2053/598138a170495e2917d81cf2d7e1617d/panel/api",
-     "token": "rLdhD2DK8Ntan1oB7NDTUERJFCT9LYarVgNdLT0KQrEHQMmS"},
-    {"ip": "89.124.64.16", "label": "Amsterdam-1",
-     "url": "https://89.124.64.16:2053/cc01cf97a2729bee5a159848470f7716/panel/api",
-     "token": "a8MYoaSe9vWFxiA6CDZZ9ifqC1HAwcCkmSZAkCCLxneaCt7Y"},
-    {"ip": "103.112.70.204", "label": "Amsterdam-Ch",
-     "url": "http://103.112.70.204:35380/2CGdTIvQfh00N1XGnv/panel/api",
-     "token": "Q87RsvJVdhKzQvxt6Vp6ARY5oz5FON8ndzYXY3zdjBx3MXGu"},
-]
+INSTRUCTION_ANDROID = os.getenv("INSTRUCTION_ANDROID", "Инструкция Android.docx")
+INSTRUCTION_IOS = os.getenv("INSTRUCTION_IOS", "Инструкция IOS.docx")
 
-DB_NAME = "vpn_bot.db"
-PRICES = {30: 219, 90: 599, 365: 2100}
-TINKOFF_COLLECTION_LINK = "https://tbank.ru/cf/1W5S3zUX13t"
+DB_NAME = os.getenv("DB_NAME", "vpn_bot.db")
+TINKOFF_COLLECTION_LINK = os.getenv("TINKOFF_COLLECTION_LINK", "https://tbank.ru/cf/1W5S3zUX13t")
+MASS_CONCURRENCY = int(os.getenv("MASS_CONCURRENCY", "6"))
 
+# Обязательные переменные
 SESSION = requests.Session()
-MASS_CONCURRENCY = 6
+PRICES = {30: 219, 90: 599, 365: 2100}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("vpn_bot")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-
 github_lock = asyncio.Lock()
 
 
@@ -75,7 +68,7 @@ class SubscriptionStates(StatesGroup):
 
 
 def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
+    return bool(ADMIN_IDS) and user_id in ADMIN_IDS
 
 
 def init_db():
