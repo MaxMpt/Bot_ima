@@ -1,0 +1,20 @@
+[
+  {
+    "ip": "195.63.144.164",
+    "label": "Amsterdam-3",
+    "url": "https://195.63.144.164:2053/598138a170495e2917d81cf2d7e1617d/panel/api",
+    "token": "your_server1_token"
+  },
+  {
+    "ip": "89.124.64.16",
+    "label": "Amsterdam-1",
+    "url": "https://89.124.64.16:2053/cc01cf97a2729bee5a159848470f7716/panel/api",
+    "token": "your_server2_token"
+  },
+  {
+    "ip": "103.112.70.204",
+    "label": "Amsterdam-Ch",
+    "url": "http://103.112.70.204:35380/2CGdTIvQfh00N1XGnv/panel/api",
+    "token": "your_server3_token"
+  }
+]
