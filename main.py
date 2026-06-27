@@ -759,12 +759,8 @@ async def create_order(callback: CallbackQuery, state: FSMContext):
     username = callback.from_user.username or f"user{user_id}"
 
     # Определяем тип конфига
-    if device == "router":
-        config_type = "wireguard"
-    else:
-        config_type = "vless"
+    config_type = "wireguard" if device == "router" else "vless"
 
-    # Создаём подписку
     identifier = await create_subscription(user_id, username, config_type, device)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -773,9 +769,7 @@ async def create_order(callback: CallbackQuery, state: FSMContext):
     ])
 
     await callback.message.edit_text(
-        f"✅ Заявка создана!\n\n"
-        f"Сумма: <b>{price} ₽</b> за <b>{days} дней</b>\n\n"
-        f"Нажми кнопку ниже для оплаты.\nПосле оплаты нажми «Я оплатил».",
+        f"✅ Заявка создана!\n\nСумма: <b>{price} ₽</b> за <b>{days} дней</b>\n\nНажми кнопку ниже для оплаты.\nПосле оплаты нажми «Я оплатил».",
         reply_markup=kb, parse_mode="HTML"
     )
     await state.clear()
@@ -784,11 +778,7 @@ async def create_order(callback: CallbackQuery, state: FSMContext):
         try:
             await bot.send_message(
                 admin_id,
-                f"🆕 <b>Новая заявка!</b>\n\n"
-                f"Пользователь: @{username}\n"
-                f"Telegram ID: <code>{user_id}</code>\n"
-                f"Идентификатор: <code>{identifier}</code>\n"
-                f"Устройство: {device} | Срок: <b>{days} дней</b> | Сумма: <b>{price} ₽</b>",
+                f"🆕 <b>Новая заявка!</b>\n\nПользователь: @{username}\nTelegram ID: <code>{user_id}</code>\nИдентификатор: <code>{identifier}</code>\nУстройство: {device} | Срок: <b>{days} дней</b> | Сумма: <b>{price} ₽</b>",
                 parse_mode="HTML"
             )
         except Exception:
@@ -883,16 +873,11 @@ async def approve_payment(callback: CallbackQuery):
             conn.commit()
             conn.close()
 
-            try:
-                await bot.send_document(
-                    user_id,
-                    FSInputFile(config_path),
-                    caption=f"✅ Оплата подтверждена!\n\n"
-                            f"Подписка на **Роутер (WireGuard)** активирована на **{days} дней**.\n\n"
-                            f"Файл конфигурации прикреплён ниже."
-                )
-            except Exception as e:
-                log.error("Ошибка отправки WireGuard конфига: %s", e)
+            await bot.send_document(
+                user_id,
+                FSInputFile(config_path),
+                caption=f"✅ Оплата подтверждена!\n\nПодписка на **Роутер (WireGuard)** активирована на **{days} дней**.\n\nФайл конфигурации прикреплён ниже."
+            )
         else:
             await callback.message.answer("❌ Не удалось создать WireGuard клиента.")
 
@@ -924,20 +909,14 @@ async def approve_payment(callback: CallbackQuery):
             conn.commit()
             conn.close()
 
-            try:
-                await bot.send_message(
-                    user_id,
-                    f"✅ Оплата подтверждена!\n\n"
-                    f"Подписка активирована на <b>{days} дней</b>.\n\n"
-                    f"<b>Ссылка на подписку:</b>\n"
-                    f"<code>https://raw.githubusercontent.com/{GITHUB_REPO}/main/{identifier}.txt</code>",
-                    parse_mode="HTML"
-                )
+            await bot.send_message(
+                user_id,
+                f"✅ Оплата подтверждена!\n\nПодписка активирована на <b>{days} дней</b>.\n\n<b>Ссылка на подписку:</b>\n<code>https://raw.githubusercontent.com/{GITHUB_REPO}/main/{identifier}.txt</code>",
+                parse_mode="HTML"
+            )
 
-                instruction_file = INSTRUCTION_IOS if device == "ios" else INSTRUCTION_ANDROID
-                await bot.send_document(user_id, FSInputFile(instruction_file), caption="📄 Инструкция по установке VPN")
-            except Exception as e:
-                log.error("Ошибка отправки пользователю: %s", e)
+            instruction_file = INSTRUCTION_IOS if device == "ios" else INSTRUCTION_ANDROID
+            await bot.send_document(user_id, FSInputFile(instruction_file), caption="📄 Инструкция по установке VPN")
         else:
             await callback.message.answer("❌ Не удалось создать/продлить VLESS клиента.")
 
