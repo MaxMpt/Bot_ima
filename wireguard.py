@@ -90,7 +90,7 @@ DNS = {WG_DNS}
 
 [Peer]
 PublicKey = {WG_SERVER_PUBLIC_KEY}
-AllowedIPs = 0.0.0.0/0
+AllowedIPs = 0.0.0.0/0 
 Endpoint = {server_ip}:{WG_PORT}
 PersistentKeepalive = 25
 """
