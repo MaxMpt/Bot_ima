@@ -792,13 +792,14 @@ async def user_confirmed_payment(callback: CallbackQuery):
     parts = callback.data.split("_")
     user_id = int(parts[1])
     days = int(parts[2])
-    email = parts[3]
-    device = parts[4] if len(parts) > 4 else "android"
+    identifier = parts[3]
+    config_type = parts[4] if len(parts) > 4 else "vless"
+
     username = callback.from_user.username or f"user{user_id}"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Подтвердить оплату", callback_data=f"approve_{user_id}_{days}_{email}_{device}")],
-        [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{user_id}_{email}")]
+        [InlineKeyboardButton(text="✅ Подтвердить оплату", callback_data=f"approve_{user_id}_{days}_{identifier}_{config_type}")],
+        [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{user_id}_{identifier}")]
     ])
 
     message_ids = {}
@@ -807,13 +808,22 @@ async def user_confirmed_payment(callback: CallbackQuery):
             msg = await bot.send_message(
                 admin_id,
                 f"💰 Пользователь подтвердил оплату!\n\n@{username} (ID: <code>{user_id}</code>)\n"
-                f"Email: <code>{email}</code>\nСрок: {days} дней | Устройство: {device}",
+                f"Идентификатор: <code>{identifier}</code>\nТип: {config_type} | Срок: {days} дней",
                 parse_mode="HTML",
                 reply_markup=kb
             )
             message_ids[str(admin_id)] = msg.message_id
         except Exception:
             pass
+
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO payment_notifications (email, message_ids) VALUES (?, ?)",
+                   (identifier, json.dumps(message_ids)))
+    conn.commit()
+    conn.close()
+
+    await callback.message.edit_text("Спасибо! Администратор проверит оплату и активирует подписку.", parse_mode="HTML")
 
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
@@ -921,7 +931,6 @@ async def approve_payment(callback: CallbackQuery):
                 parse_mode="HTML"
             )
 
-            # Определяем инструкцию по config_type (или можно по device, если нужно)
             instruction_file = INSTRUCTION_IOS if "ios" in identifier.lower() else INSTRUCTION_ANDROID
             await bot.send_document(user_id, FSInputFile(instruction_file), caption="📄 Инструкция по установке VPN")
         else:
