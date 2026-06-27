@@ -763,9 +763,10 @@ async def create_order(callback: CallbackQuery, state: FSMContext):
 
     identifier = await create_subscription(user_id, username, config_type, device)
 
+    # Передаём config_type вместо device в callback_data
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оплатить подписку", url=TINKOFF_COLLECTION_LINK)],
-        [InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"paid_{user_id}_{days}_{identifier}_{device}")]
+        [InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"paid_{user_id}_{days}_{identifier}_{config_type}")]
     ])
 
     await callback.message.edit_text(
@@ -778,7 +779,7 @@ async def create_order(callback: CallbackQuery, state: FSMContext):
         try:
             await bot.send_message(
                 admin_id,
-                f"🆕 <b>Новая заявка!</b>\n\nПользователь: @{username}\nTelegram ID: <code>{user_id}</code>\nИдентификатор: <code>{identifier}</code>\nУстройство: {device} | Срок: <b>{days} дней</b> | Сумма: <b>{price} ₽</b>",
+                f"🆕 <b>Новая заявка!</b>\n\nПользователь: @{username}\nTelegram ID: <code>{user_id}</code>\nИдентификатор: <code>{identifier}</code>\nТип: {config_type} | Срок: <b>{days} дней</b> | Сумма: <b>{price} ₽</b>",
                 parse_mode="HTML"
             )
         except Exception:
@@ -851,7 +852,7 @@ async def approve_payment(callback: CallbackQuery):
     user_id = int(data[1])
     days = int(data[2])
     identifier = data[3]
-    device = data[4] if len(data) > 4 else "android"
+    config_type = data[4] if len(data) > 4 else "vless"
 
     await _delete_payment_notifications(identifier)
 
@@ -859,7 +860,7 @@ async def approve_payment(callback: CallbackQuery):
     expiry_date = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
 
     # ====================== WIREGUARD ======================
-    if device == "router":
+    if config_type == "wireguard":
         client_name, config_path = create_wireguard_client(user_id, "", days)
 
         if client_name and config_path:
@@ -876,7 +877,9 @@ async def approve_payment(callback: CallbackQuery):
             await bot.send_document(
                 user_id,
                 FSInputFile(config_path),
-                caption=f"✅ Оплата подтверждена!\n\nПодписка на **Роутер (WireGuard)** активирована на **{days} дней**.\n\nФайл конфигурации прикреплён ниже."
+                caption=f"✅ Оплата подтверждена!\n\n"
+                        f"Подписка на **Роутер (WireGuard)** активирована на **{days} дней**.\n\n"
+                        f"Файл конфигурации прикреплён ниже."
             )
         else:
             await callback.message.answer("❌ Не удалось создать WireGuard клиента.")
@@ -911,11 +914,15 @@ async def approve_payment(callback: CallbackQuery):
 
             await bot.send_message(
                 user_id,
-                f"✅ Оплата подтверждена!\n\nПодписка активирована на <b>{days} дней</b>.\n\n<b>Ссылка на подписку:</b>\n<code>https://raw.githubusercontent.com/{GITHUB_REPO}/main/{identifier}.txt</code>",
+                f"✅ Оплата подтверждена!\n\n"
+                f"Подписка активирована на <b>{days} дней</b>.\n\n"
+                f"<b>Ссылка на подписку:</b>\n"
+                f"<code>https://raw.githubusercontent.com/{GITHUB_REPO}/main/{identifier}.txt</code>",
                 parse_mode="HTML"
             )
 
-            instruction_file = INSTRUCTION_IOS if device == "ios" else INSTRUCTION_ANDROID
+            # Определяем инструкцию по config_type (или можно по device, если нужно)
+            instruction_file = INSTRUCTION_IOS if "ios" in identifier.lower() else INSTRUCTION_ANDROID
             await bot.send_document(user_id, FSInputFile(instruction_file), caption="📄 Инструкция по установке VPN")
         else:
             await callback.message.answer("❌ Не удалось создать/продлить VLESS клиента.")
