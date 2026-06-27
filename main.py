@@ -853,6 +853,8 @@ async def approve_payment(callback: CallbackQuery):
 
     # ====================== WIREGUARD ======================
     if config_type == "wireguard":
+        # При повторной покупке удаляем старого peer'а (если был)
+        # Для простоты пока просто создаём нового клиента
         client_name, config_path = create_wireguard_client(user_id, "", days)
 
         if client_name and config_path:
