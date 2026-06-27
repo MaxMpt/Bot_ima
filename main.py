@@ -684,7 +684,7 @@ async def choose_device(callback: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Android", callback_data="device_android")],
         [InlineKeyboardButton(text="iOS", callback_data="device_ios")],
-        [InlineKeyboardButton(text="Роутер (WireGuard)", callback_data="device_router")],
+        # [InlineKeyboardButton(text="Роутер (WireGuard)", callback_data="device_router")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main")]
     ])
     await callback.message.edit_text("Выберите устройство:", reply_markup=kb)
@@ -731,7 +731,7 @@ async def back_to_device(callback: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Android", callback_data="device_android")],
         [InlineKeyboardButton(text="iOS", callback_data="device_ios")],
-        [InlineKeyboardButton(text="Роутер (WireGuard)", callback_data="device_router")],
+        # [InlineKeyboardButton(text="Роутер (WireGuard)", callback_data="device_router")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main")]
     ])
     try:
