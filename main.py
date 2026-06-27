@@ -66,8 +66,6 @@ SERVERS = [
     },
 ]
 
-
-# Обязательные переменные
 SESSION = requests.Session()
 PRICES = {30: 219, 90: 599, 365: 2100}
 
@@ -94,11 +92,11 @@ class SubscriptionStates(StatesGroup):
 def is_admin(user_id: int) -> bool:
     return bool(ADMIN_IDS) and user_id in ADMIN_IDS
 
+
 def init_db():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
 
-    # Обновлённая таблица subscriptions
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS subscriptions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,11 +136,6 @@ def init_db():
 
 
 async def create_subscription(user_id: int, username: str, config_type: str, device: str = None):
-    """
-    Универсальная функция создания подписки.
-    config_type: 'vless' или 'wireguard'
-    """
-
     def _create():
         conn = sqlite3.connect(DB_NAME, check_same_thread=False)
         cursor = conn.cursor()
@@ -282,7 +275,7 @@ def delete_client_everywhere(email: str):
 
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM subscriptions WHERE email = ?", (email,))
+    cursor.execute("DELETE FROM subscriptions WHERE email = ?", (email))
     conn.commit()
     conn.close()
 
@@ -304,6 +297,7 @@ def build_vless_link(server_ip, label, inbound, client_uuid, name):
     spx = reality.get("spiderX", "/")
     port = inbound.get("port", 443)
     return f"vless://{client_uuid}@{server_ip}:{port}?encryption=none&flow=xtls-rprx-vision&fp=firefox&pbk={pk}&security=reality&sid={sid}&sni=www.sony.com&spx={quote(spx, safe='')}&type=tcp#{label}-{name}"
+
 
 async def update_github_file_completely(name: str, links: list):
     async with github_lock:
@@ -511,7 +505,7 @@ async def admin_temp_config_days(message: Message, state: FSMContext):
         conn.close()
 
         text = f"✅ <b>Временный конфиг создан</b>\n\n"
-        text += f"📁 <b>Файл в GitHub:</b>\nhttps://raw.githubusercontent.com/{GITHUB_REPO}/main/{email}.txt\n\n"
+        text += f"📁 <b>Файл в GitHub:</b>\nhttps://raw.githubusercontent.com/{GITHUB_REPO}/main/{email}.txt</code>\n\n"
         for link in links:
             text += f"<code>{link}</code>\n\n"
         await message.answer(text, parse_mode="HTML")
@@ -578,7 +572,6 @@ async def admin_all_clients(callback: CallbackQuery):
         display_name = f"@{username}" if username else "—"
         cfg_type = "VLESS" if config_type == "vless" else "WireGuard"
 
-        # Считаем оставшиеся дни
         if expiry_date:
             try:
                 exp = datetime.strptime(expiry_date, "%Y-%m-%d %H:%M:%S")
@@ -711,7 +704,7 @@ async def back_to_main(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(SubscriptionStates.choosing_device)
 async def choose_duration(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-    device = callback.data.split("_")[1]   # android / ios / router
+    device = callback.data.split("_")[1]
     await state.update_data(device=device)
 
     user_id = callback.from_user.id
@@ -738,6 +731,7 @@ async def back_to_device(callback: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Android", callback_data="device_android")],
         [InlineKeyboardButton(text="iOS", callback_data="device_ios")],
+        [InlineKeyboardButton(text="Роутер (WireGuard)", callback_data="device_router")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main")]
     ])
     try:
@@ -758,15 +752,12 @@ async def create_order(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     username = callback.from_user.username or f"user{user_id}"
 
-    # Определяем тип конфига
     config_type = "wireguard" if device == "router" else "vless"
-
     identifier = await create_subscription(user_id, username, config_type, device)
 
-    # Передаём config_type вместо device в callback_data
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оплатить подписку", url=TINKOFF_COLLECTION_LINK)],
-        [InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"paid_{user_id}_{days}_{identifier}_{config_type}")]
+        [InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"paid_{user_id}_{days}_{config_type}_{identifier}")]
     ])
 
     await callback.message.edit_text(
@@ -792,13 +783,13 @@ async def user_confirmed_payment(callback: CallbackQuery):
     parts = callback.data.split("_")
     user_id = int(parts[1])
     days = int(parts[2])
-    identifier = parts[3]
-    config_type = parts[4] if len(parts) > 4 else "vless"
+    config_type = parts[3]
+    identifier = parts[4] if len(parts) > 4 else ""
 
     username = callback.from_user.username or f"user{user_id}"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Подтвердить оплату", callback_data=f"approve_{user_id}_{days}_{identifier}_{config_type}")],
+        [InlineKeyboardButton(text="✅ Подтвердить оплату", callback_data=f"approve_{user_id}_{days}_{config_type}_{identifier}")],
         [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{user_id}_{identifier}")]
     ])
 
@@ -852,8 +843,8 @@ async def approve_payment(callback: CallbackQuery):
     data = callback.data.split("_")
     user_id = int(data[1])
     days = int(data[2])
-    identifier = data[3]
-    config_type = data[4] if len(data) > 4 else "vless"
+    config_type = data[3]
+    identifier = data[4] if len(data) > 4 else ""
 
     await _delete_payment_notifications(identifier)
 
@@ -936,10 +927,10 @@ async def reject_payment(callback: CallbackQuery):
 
     data = callback.data.split("_")
     user_id = int(data[1])
-    email = data[2] if len(data) > 2 else None
+    identifier = data[2] if len(data) > 2 else None
 
-    if email:
-        await _delete_payment_notifications(email)
+    if identifier:
+        await _delete_payment_notifications(identifier)
 
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
