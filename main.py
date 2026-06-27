@@ -25,6 +25,8 @@ from openpyxl import Workbook
 import os
 from dotenv import load_dotenv
 
+from wireguard import create_wireguard_client
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ====================== НАСТРОЙКИ ======================
@@ -42,6 +44,28 @@ INSTRUCTION_IOS = os.getenv("INSTRUCTION_IOS", "Инструкция IOS.docx")
 DB_NAME = os.getenv("DB_NAME", "vpn_bot.db")
 TINKOFF_COLLECTION_LINK = os.getenv("TINKOFF_COLLECTION_LINK", "https://tbank.ru/cf/1W5S3zUX13t")
 MASS_CONCURRENCY = int(os.getenv("MASS_CONCURRENCY", "6"))
+
+SERVERS = [
+    {
+        "ip": "195.63.144.164",
+        "label": "Amsterdam-3",
+        "url": "https://195.63.144.164:2053/598138a170495e2917d81cf2d7e1617d/panel/api",
+        "token": "rLdhD2DK8Ntan1oB7NDTUERJFCT9LYarVgNdLT0KQrEHQMmS"
+    },
+    {
+        "ip": "89.124.64.16",
+        "label": "Amsterdam-1",
+        "url": "https://89.124.64.16:2053/cc01cf97a2729bee5a159848470f7716/panel/api",
+        "token": "a8MYoaSe9vWFxiA6CDZZ9ifqC1HAwcCkmSZAkCCLxneaCt7Y"
+    },
+    {
+        "ip": "103.112.70.204",
+        "label": "Amsterdam-Ch",
+        "url": "http://103.112.70.204:35380/2CGdTIvQfh00N1XGnv/panel/api",
+        "token": "Q87RsvJVdhKzQvxt6Vp6ARY5oz5FON8ndzYXY3zdjBx3MXGu"
+    },
+]
+
 
 # Обязательные переменные
 SESSION = requests.Session()
@@ -70,50 +94,76 @@ class SubscriptionStates(StatesGroup):
 def is_admin(user_id: int) -> bool:
     return bool(ADMIN_IDS) and user_id in ADMIN_IDS
 
-
 def init_db():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
+
+    # Обновлённая таблица subscriptions
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS subscriptions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER UNIQUE,
+            user_id INTEGER,
             username TEXT,
-            email TEXT,
-            days INTEGER,
+            config_type TEXT NOT NULL DEFAULT 'vless',
+            identifier TEXT NOT NULL,
             device TEXT,
             status TEXT DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            expiry_date TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, config_type)
         )
     """)
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS payment_notifications (
             email TEXT PRIMARY KEY,
             message_ids TEXT
         )
     """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS wireguard_clients (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subscription_id INTEGER,
+            client_name TEXT UNIQUE NOT NULL,
+            client_ip TEXT,
+            public_key TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (subscription_id) REFERENCES subscriptions(id) ON DELETE CASCADE
+        )
+    """)
+
     conn.commit()
     conn.close()
 
 
-async def create_subscription(user_id: int, username: str, days: int, device: str):
+async def create_subscription(user_id: int, username: str, config_type: str, device: str = None):
+    """
+    Универсальная функция создания подписки.
+    config_type: 'vless' или 'wireguard'
+    """
+
     def _create():
         conn = sqlite3.connect(DB_NAME, check_same_thread=False)
         cursor = conn.cursor()
-        email = f"tg{user_id}"
+
+        identifier = f"tg{user_id}" if config_type == "vless" else f"wg_{user_id}"
+
         cursor.execute("""
-            INSERT INTO subscriptions (user_id, username, email, days, device, status)
+            INSERT INTO subscriptions 
+            (user_id, username, config_type, identifier, device, status)
             VALUES (?, ?, ?, ?, ?, 'pending')
-            ON CONFLICT(user_id) DO UPDATE SET
+            ON CONFLICT(user_id, config_type) DO UPDATE SET
                 username = excluded.username,
-                email = excluded.email,
-                days = excluded.days,
+                identifier = excluded.identifier,
                 device = excluded.device,
                 status = 'pending'
-        """, (user_id, username, email, days, device))
+        """, (user_id, username, config_type, identifier, device))
+
         conn.commit()
         conn.close()
-        return email
+        return identifier
+
     return await asyncio.to_thread(_create)
 
 
@@ -255,7 +305,6 @@ def build_vless_link(server_ip, label, inbound, client_uuid, name):
     port = inbound.get("port", 443)
     return f"vless://{client_uuid}@{server_ip}:{port}?encryption=none&flow=xtls-rprx-vision&fp=firefox&pbk={pk}&security=reality&sid={sid}&sni=www.sony.com&spx={quote(spx, safe='')}&type=tcp#{label}-{name}"
 
-
 async def update_github_file_completely(name: str, links: list):
     async with github_lock:
         def _update():
@@ -263,11 +312,14 @@ async def update_github_file_completely(name: str, links: list):
             repo = g.get_repo(GITHUB_REPO)
             content = "\n".join(links)
             filename = f"{name}.txt"
+            log.info(f"GitHub: пытаюсь обновить {filename}, ссылок: {len(links)}")
             try:
                 file = repo.get_contents(filename)
                 repo.update_file(filename, f"Update {name}", content, file.sha)
+                log.info(f"GitHub: файл {filename} успешно обновлён")
             except Exception:
                 repo.create_file(filename, f"Create {name}", content)
+                log.info(f"GitHub: файл {filename} создан")
         try:
             await asyncio.to_thread(_update)
         except Exception as e:
@@ -298,7 +350,7 @@ async def _notify_one_user(user_id: int, email: str, semaphore: asyncio.Semaphor
     async with semaphore:
         try:
             remaining = await get_user_remaining_days(email)
-            if remaining <= 1:
+            if remaining <= 3:
                 await bot.send_message(
                     user_id,
                     "⚠️ <b>Внимание!</b>\n\nВаша подписка VPN заканчивается в течение 1 дня.\nПродлите подписку.",
@@ -508,7 +560,11 @@ async def admin_all_clients(callback: CallbackQuery):
 
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute("SELECT username, email, status, device FROM subscriptions")
+    cursor.execute("""
+        SELECT id, username, identifier, config_type, status, device, expiry_date 
+        FROM subscriptions 
+        ORDER BY created_at DESC
+    """)
     clients = cursor.fetchall()
     conn.close()
 
@@ -516,17 +572,30 @@ async def admin_all_clients(callback: CallbackQuery):
         await callback.message.answer("Клиентов нет.")
         return await show_admin_panel(callback)
 
-    semaphore = asyncio.Semaphore(MASS_CONCURRENCY)
-    async def _get_days(email):
-        async with semaphore:
-            return await get_user_remaining_days(email)
-
-    days_list = await asyncio.gather(*[_get_days(email) for _, email, _, _ in clients])
-
     text = "📋 <b>Все клиенты:</b>\n\n"
-    for (username, email, status, device), remaining in zip(clients, days_list):
+
+    for client_id, username, identifier, config_type, status, device, expiry_date in clients:
         display_name = f"@{username}" if username else "—"
-        text += f"{display_name} | <code>{email}</code> | {status} | {device or '—'} | {remaining} дней\n"
+        cfg_type = "VLESS" if config_type == "vless" else "WireGuard"
+
+        # Считаем оставшиеся дни
+        if expiry_date:
+            try:
+                exp = datetime.strptime(expiry_date, "%Y-%m-%d %H:%M:%S")
+                remaining = max(0, (exp - datetime.now()).days)
+            except:
+                remaining = 0
+        else:
+            remaining = 0
+
+        text += (
+            f"{display_name} | "
+            f"<code>{identifier}</code> | "
+            f"{cfg_type} | "
+            f"{status} | "
+            f"{device or '—'} | "
+            f"{remaining} дней\n"
+        )
 
     await callback.message.answer(text, parse_mode="HTML")
     await show_admin_panel(callback)
@@ -538,35 +607,46 @@ async def admin_all_clients(callback: CallbackQuery):
 async def admin_export_excel(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
         return await callback.answer("Нет доступа", show_alert=True)
+
     await callback.message.answer("Генерирую Excel...")
 
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute("SELECT username, email, status, device FROM subscriptions")
+    cursor.execute("""
+        SELECT username, identifier, config_type, status, device, expiry_date 
+        FROM subscriptions 
+        ORDER BY created_at DESC
+    """)
     clients = cursor.fetchall()
     conn.close()
 
-    semaphore = asyncio.Semaphore(MASS_CONCURRENCY)
-    async def _get_days(email):
-        async with semaphore:
-            return await get_user_remaining_days(email)
-
-    days_list = await asyncio.gather(*[_get_days(email) for _, email, _, _ in clients])
-
     wb = Workbook()
     ws = wb.active
-    ws.append(["Username", "Email", "Статус", "Устройство", "Осталось дней"])
-    for (username, email, status, device), remaining in zip(clients, days_list):
+    ws.title = "Клиенты"
+    ws.append(["Username", "Identifier", "Тип", "Статус", "Устройство", "Осталось дней", "Дата окончания"])
+
+    for username, identifier, config_type, status, device, expiry_date in clients:
         display_name = f"@{username}" if username else ""
-        ws.append([display_name, email, status, device or "—", remaining])
+        cfg_type = "VLESS" if config_type == "vless" else "WireGuard"
+
+        if expiry_date:
+            try:
+                exp = datetime.strptime(expiry_date, "%Y-%m-%d %H:%M:%S")
+                remaining = max(0, (exp - datetime.now()).days)
+            except:
+                remaining = 0
+        else:
+            remaining = 0
+
+        ws.append([display_name, identifier, cfg_type, status, device or "—", remaining, expiry_date or ""])
 
     buffer = BytesIO()
     wb.save(buffer)
     buffer.seek(0)
 
     await callback.message.answer_document(
-        BufferedInputFile(buffer.read(), filename="clients.xlsx"),
-        caption="📊 Список клиентов"
+        BufferedInputFile(buffer.read(), filename="all_clients.xlsx"),
+        caption="📊 Список всех клиентов (VLESS + WireGuard)"
     )
     await show_admin_panel(callback)
 
@@ -611,6 +691,7 @@ async def choose_device(callback: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Android", callback_data="device_android")],
         [InlineKeyboardButton(text="iOS", callback_data="device_ios")],
+        [InlineKeyboardButton(text="Роутер (WireGuard)", callback_data="device_router")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main")]
     ])
     await callback.message.edit_text("Выберите устройство:", reply_markup=kb)
@@ -630,12 +711,11 @@ async def back_to_main(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(SubscriptionStates.choosing_device)
 async def choose_duration(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-    device = callback.data.split("_")[1]
+    device = callback.data.split("_")[1]   # android / ios / router
     await state.update_data(device=device)
 
     user_id = callback.from_user.id
-    email = f"tg{user_id}"
-    remaining = await get_user_remaining_days(email)
+    remaining = await get_user_remaining_days(f"tg{user_id}")
 
     text = f"⚠️ У тебя осталось <b>{remaining} дней</b>.\n\nВыберите срок продления:" if remaining > 0 else "Выберите срок подписки:"
 
@@ -677,15 +757,25 @@ async def create_order(callback: CallbackQuery, state: FSMContext):
 
     user_id = callback.from_user.id
     username = callback.from_user.username or f"user{user_id}"
-    email = await create_subscription(user_id, username, days, device)
+
+    # Определяем тип конфига
+    if device == "router":
+        config_type = "wireguard"
+    else:
+        config_type = "vless"
+
+    # Создаём подписку
+    identifier = await create_subscription(user_id, username, config_type, device)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оплатить подписку", url=TINKOFF_COLLECTION_LINK)],
-        [InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"paid_{user_id}_{days}_{email}_{device}")]
+        [InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"paid_{user_id}_{days}_{identifier}_{device}")]
     ])
 
     await callback.message.edit_text(
-        f"✅ Заявка создана!\n\nСумма: <b>{price} ₽</b> за <b>{days} дней</b>\n\nНажми кнопку ниже для оплаты.\nПосле оплаты нажми «Я оплатил».",
+        f"✅ Заявка создана!\n\n"
+        f"Сумма: <b>{price} ₽</b> за <b>{days} дней</b>\n\n"
+        f"Нажми кнопку ниже для оплаты.\nПосле оплаты нажми «Я оплатил».",
         reply_markup=kb, parse_mode="HTML"
     )
     await state.clear()
@@ -694,8 +784,10 @@ async def create_order(callback: CallbackQuery, state: FSMContext):
         try:
             await bot.send_message(
                 admin_id,
-                f"🆕 <b>Новая заявка!</b>\n\nПользователь: @{username}\n"
-                f"Telegram ID: <code>{user_id}</code>\nКонфиг: <code>{email}</code>\n"
+                f"🆕 <b>Новая заявка!</b>\n\n"
+                f"Пользователь: @{username}\n"
+                f"Telegram ID: <code>{user_id}</code>\n"
+                f"Идентификатор: <code>{identifier}</code>\n"
                 f"Устройство: {device} | Срок: <b>{days} дней</b> | Сумма: <b>{price} ₽</b>",
                 parse_mode="HTML"
             )
@@ -768,47 +860,86 @@ async def approve_payment(callback: CallbackQuery):
     data = callback.data.split("_")
     user_id = int(data[1])
     days = int(data[2])
-    email = data[3]
+    identifier = data[3]
     device = data[4] if len(data) > 4 else "android"
 
-    await _delete_payment_notifications(email)
+    await _delete_payment_notifications(identifier)
 
-    results = await asyncio.gather(
-        *[asyncio.to_thread(create_or_extend_client, server, email, days) for server in SERVERS],
-        return_exceptions=True
-    )
+    from datetime import datetime, timedelta
+    expiry_date = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
 
-    links = []
-    for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            log.error("Ошибка на сервере %s: %s", SERVERS[i]["label"], result)
-            continue
-        if isinstance(result, tuple) and result[0] and result[1]:
-            links.append(build_vless_link(SERVERS[i]["ip"], SERVERS[i]["label"], result[1], result[0], email))
+    # ====================== WIREGUARD ======================
+    if device == "router":
+        client_name, config_path = create_wireguard_client(user_id, "", days)
 
-    if links:
-        await update_github_file_completely(email, links)
+        if client_name and config_path:
+            conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE subscriptions 
+                SET status = 'active', expiry_date = ?
+                WHERE user_id = ? AND config_type = 'wireguard'
+            """, (expiry_date, user_id))
+            conn.commit()
+            conn.close()
 
-        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE subscriptions SET status = 'active' WHERE user_id = ?", (user_id,))
-        conn.commit()
-        conn.close()
+            try:
+                await bot.send_document(
+                    user_id,
+                    FSInputFile(config_path),
+                    caption=f"✅ Оплата подтверждена!\n\n"
+                            f"Подписка на **Роутер (WireGuard)** активирована на **{days} дней**.\n\n"
+                            f"Файл конфигурации прикреплён ниже."
+                )
+            except Exception as e:
+                log.error("Ошибка отправки WireGuard конфига: %s", e)
+        else:
+            await callback.message.answer("❌ Не удалось создать WireGuard клиента.")
 
-        try:
-            await bot.send_message(
-                user_id,
-                f"✅ Оплата подтверждена!\n\nПодписка активирована на <b>{days} дней</b>.\n\n"
-                f"<b>Ссылка на подписку:</b>\n<code>https://raw.githubusercontent.com/{GITHUB_REPO}/main/{email}.txt</code>",
-                parse_mode="HTML"
-            )
-
-            instruction_file = INSTRUCTION_IOS if device == "ios" else INSTRUCTION_ANDROID
-            await bot.send_document(user_id, FSInputFile(instruction_file), caption="📄 Инструкция по установке VPN")
-        except Exception as e:
-            log.error("Ошибка отправки пользователю: %s", e)
+    # ====================== VLESS ======================
     else:
-        await callback.message.answer("❌ Не удалось создать/продлить клиента.")
+        results = await asyncio.gather(
+            *[asyncio.to_thread(create_or_extend_client, server, identifier, days) for server in SERVERS],
+            return_exceptions=True
+        )
+
+        links = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                log.error("Ошибка на сервере %s: %s", SERVERS[i]["label"], result)
+                continue
+            if isinstance(result, tuple) and result[0] and result[1]:
+                links.append(build_vless_link(SERVERS[i]["ip"], SERVERS[i]["label"], result[1], result[0], identifier))
+
+        if links:
+            await update_github_file_completely(identifier, links)
+
+            conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE subscriptions 
+                SET status = 'active', expiry_date = ?
+                WHERE user_id = ? AND config_type = 'vless'
+            """, (expiry_date, user_id))
+            conn.commit()
+            conn.close()
+
+            try:
+                await bot.send_message(
+                    user_id,
+                    f"✅ Оплата подтверждена!\n\n"
+                    f"Подписка активирована на <b>{days} дней</b>.\n\n"
+                    f"<b>Ссылка на подписку:</b>\n"
+                    f"<code>https://raw.githubusercontent.com/{GITHUB_REPO}/main/{identifier}.txt</code>",
+                    parse_mode="HTML"
+                )
+
+                instruction_file = INSTRUCTION_IOS if device == "ios" else INSTRUCTION_ANDROID
+                await bot.send_document(user_id, FSInputFile(instruction_file), caption="📄 Инструкция по установке VPN")
+            except Exception as e:
+                log.error("Ошибка отправки пользователю: %s", e)
+        else:
+            await callback.message.answer("❌ Не удалось создать/продлить VLESS клиента.")
 
 
 @dp.callback_query(F.data.startswith("reject_"))
