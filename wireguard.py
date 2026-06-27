@@ -1,6 +1,7 @@
 import subprocess
 import os
 import logging
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -53,10 +54,8 @@ def create_wireguard_client(user_id: int, username: str, days: int) -> tuple[str
             [WG_BIN, "pubkey"], input=private_key.encode()
         ).decode().strip()
 
-        # === ВАЖНО: удаляем старого peer'а, если он был ===
-        # (чтобы не было конфликтов при повторной покупке)
+        # Удаляем старого peer'а с таким же IP (если есть)
         try:
-            # Получаем список текущих peer'ов и удаляем те, у которых allowed-ips совпадает с новым
             result = subprocess.run(
                 [WG_BIN, "show", WG_INTERFACE, "allowed-ips"],
                 capture_output=True, text=True, check=True
@@ -64,15 +63,11 @@ def create_wireguard_client(user_id: int, username: str, days: int) -> tuple[str
             for line in result.stdout.strip().splitlines():
                 if client_ip in line:
                     old_pubkey = line.split()[0]
-                    subprocess.run(
-                        [WG_BIN, "set", WG_INTERFACE, "peer", old_pubkey, "remove"],
-                        check=False
-                    )
-                    log.info("Старый peer удалён: %s", old_pubkey[:20])
+                    subprocess.run([WG_BIN, "set", WG_INTERFACE, "peer", old_pubkey, "remove"], check=False)
         except:
             pass
 
-        # Добавляем нового клиента
+        # Добавляем нового peer'а
         subprocess.run([
             WG_BIN, "set", WG_INTERFACE,
             "peer", public_key,
@@ -82,7 +77,11 @@ def create_wireguard_client(user_id: int, username: str, days: int) -> tuple[str
         os.makedirs(WG_CLIENT_DIR, exist_ok=True)
         config_path = os.path.join(WG_CLIENT_DIR, f"{client_name}.conf")
 
-        server_ip = subprocess.check_output(["curl", "-s", "ifconfig.me"], timeout=8).decode().strip()
+        # Получаем внешний IP сервера через requests (надёжнее curl)
+        try:
+            server_ip = requests.get("https://ifconfig.me", timeout=8).text.strip()
+        except:
+            server_ip = "YOUR_SERVER_IP_HERE"
 
         config_content = f"""[Interface]
 PrivateKey = {private_key}
