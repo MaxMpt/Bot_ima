@@ -81,7 +81,7 @@ def create_wireguard_client(user_id: int, username: str, days: int) -> tuple[str
         try:
             server_ip = requests.get("https://ifconfig.me", timeout=8).text.strip()
         except:
-            server_ip = "YOUR_SERVER_IP_HERE"
+            server_ip = "103.112.69.183"
 
         config_content = f"""[Interface]
 PrivateKey = {private_key}
