@@ -13,6 +13,9 @@ WG_SERVER_PUBLIC_KEY = os.getenv("WG_SERVER_PUBLIC_KEY", "")
 WG_PORT = int(os.getenv("WG_PORT", "51820"))
 WG_DNS = os.getenv("WG_DNS", "1.1.1.1, 8.8.8.8")
 WG_CLIENT_DIR = os.getenv("WG_CLIENT_DIR", "/etc/wireguard/client")
+
+# Полный путь к wg (чтобы работало из venv)
+WG_BIN = "/usr/bin/wg"
 # ========================================================================
 
 
@@ -20,7 +23,7 @@ def get_next_available_ip() -> str | None:
     """Возвращает следующий свободный IP в подсети 10.8.0.0/24"""
     try:
         result = subprocess.run(
-            ["wg", "show", WG_INTERFACE, "allowed-ips"],
+            [WG_BIN, "show", WG_INTERFACE, "allowed-ips"],
             capture_output=True, text=True, check=True
         )
         used_ips = set()
@@ -54,14 +57,14 @@ def create_wireguard_client(user_id: int, username: str, days: int) -> tuple[str
 
     try:
         # Генерируем ключи
-        private_key = subprocess.check_output(["wg", "genkey"]).decode().strip()
+        private_key = subprocess.check_output([WG_BIN, "genkey"]).decode().strip()
         public_key = subprocess.check_output(
-            ["wg", "pubkey"], input=private_key.encode()
+            [WG_BIN, "pubkey"], input=private_key.encode()
         ).decode().strip()
 
         # Добавляем клиента на сервер
         subprocess.run([
-            "wg", "set", WG_INTERFACE,
+            WG_BIN, "set", WG_INTERFACE,
             "peer", public_key,
             "allowed-ips", f"{client_ip}/32"
         ], check=True)
@@ -69,6 +72,14 @@ def create_wireguard_client(user_id: int, username: str, days: int) -> tuple[str
         # Создаём папку для клиентов
         os.makedirs(WG_CLIENT_DIR, exist_ok=True)
         config_path = os.path.join(WG_CLIENT_DIR, f"{client_name}.conf")
+
+        # Получаем внешний IP сервера
+        try:
+            server_ip = subprocess.check_output(
+                ["curl", "-s", "ifconfig.me"], timeout=10
+            ).decode().strip()
+        except:
+            server_ip = "YOUR_SERVER_IP"  # fallback
 
         # Формируем конфиг
         config_content = f"""[Interface]
@@ -79,7 +90,7 @@ DNS = {WG_DNS}
 [Peer]
 PublicKey = {WG_SERVER_PUBLIC_KEY}
 AllowedIPs = 0.0.0.0/0
-Endpoint = $(curl -s ifconfig.me):{WG_PORT}
+Endpoint = {server_ip}:{WG_PORT}
 PersistentKeepalive = 25
 """
 
