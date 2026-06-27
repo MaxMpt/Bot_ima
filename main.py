@@ -825,15 +825,6 @@ async def user_confirmed_payment(callback: CallbackQuery):
 
     await callback.message.edit_text("Спасибо! Администратор проверит оплату и активирует подписку.", parse_mode="HTML")
 
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO payment_notifications (email, message_ids) VALUES (?, ?)",
-                   (email, json.dumps(message_ids)))
-    conn.commit()
-    conn.close()
-
-    await callback.message.edit_text("Спасибо! Администратор проверит оплату и активирует подписку.", parse_mode="HTML")
-
 
 async def _delete_payment_notifications(email: str):
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
