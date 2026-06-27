@@ -15,18 +15,6 @@ WG_CLIENT_DIR = os.getenv("WG_CLIENT_DIR", "/etc/wireguard/client")
 WG_BIN = "/usr/bin/wg"
 
 
-def remove_wireguard_peer(public_key: str):
-    """Удаляет peer с интерфейса wg0"""
-    try:
-        subprocess.run(
-            [WG_BIN, "set", WG_INTERFACE, "peer", public_key, "remove"],
-            check=True, capture_output=True
-        )
-        log.info("Peer удалён: %s", public_key[:20])
-    except Exception as e:
-        log.warning("Не удалось удалить peer %s: %s", public_key[:20], e)
-
-
 def get_next_available_ip() -> str | None:
     try:
         result = subprocess.run(
@@ -65,6 +53,25 @@ def create_wireguard_client(user_id: int, username: str, days: int) -> tuple[str
             [WG_BIN, "pubkey"], input=private_key.encode()
         ).decode().strip()
 
+        # === ВАЖНО: удаляем старого peer'а, если он был ===
+        # (чтобы не было конфликтов при повторной покупке)
+        try:
+            # Получаем список текущих peer'ов и удаляем те, у которых allowed-ips совпадает с новым
+            result = subprocess.run(
+                [WG_BIN, "show", WG_INTERFACE, "allowed-ips"],
+                capture_output=True, text=True, check=True
+            )
+            for line in result.stdout.strip().splitlines():
+                if client_ip in line:
+                    old_pubkey = line.split()[0]
+                    subprocess.run(
+                        [WG_BIN, "set", WG_INTERFACE, "peer", old_pubkey, "remove"],
+                        check=False
+                    )
+                    log.info("Старый peer удалён: %s", old_pubkey[:20])
+        except:
+            pass
+
         # Добавляем нового клиента
         subprocess.run([
             WG_BIN, "set", WG_INTERFACE,
@@ -75,10 +82,7 @@ def create_wireguard_client(user_id: int, username: str, days: int) -> tuple[str
         os.makedirs(WG_CLIENT_DIR, exist_ok=True)
         config_path = os.path.join(WG_CLIENT_DIR, f"{client_name}.conf")
 
-        try:
-            server_ip = subprocess.check_output(["curl", "-s", "ifconfig.me"], timeout=8).decode().strip()
-        except:
-            server_ip = "103.112.69.183"
+        server_ip = subprocess.check_output(["curl", "-s", "ifconfig.me"], timeout=8).decode().strip()
 
         config_content = f"""[Interface]
 PrivateKey = {private_key}
