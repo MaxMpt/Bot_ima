@@ -853,18 +853,36 @@ async def approve_payment(callback: CallbackQuery):
 
     # ====================== WIREGUARD ======================
     if config_type == "wireguard":
-        # При повторной покупке удаляем старого peer'а (если был)
-        # Для простоты пока просто создаём нового клиента
+        from datetime import datetime, timedelta
+
+        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT expiry_date FROM subscriptions 
+            WHERE user_id = ? AND config_type = 'wireguard' AND status = 'active'
+        """, (user_id,))
+        row = cursor.fetchone()
+
+        if row and row[0]:
+            # Продлеваем существующую подписку
+            current_expiry = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+            if current_expiry < datetime.now():
+                current_expiry = datetime.now()
+            new_expiry = current_expiry + timedelta(days=days)
+            expiry_date_str = new_expiry.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            # Первая покупка
+            expiry_date_str = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+
+        # Создаём нового клиента (новый конфиг)
         client_name, config_path = create_wireguard_client(user_id, "", days)
 
         if client_name and config_path:
-            conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-            cursor = conn.cursor()
             cursor.execute("""
                 UPDATE subscriptions 
                 SET status = 'active', expiry_date = ?
                 WHERE user_id = ? AND config_type = 'wireguard'
-            """, (expiry_date, user_id))
+            """, (expiry_date_str, user_id))
             conn.commit()
             conn.close()
 
@@ -872,10 +890,11 @@ async def approve_payment(callback: CallbackQuery):
                 user_id,
                 FSInputFile(config_path),
                 caption=f"✅ Оплата подтверждена!\n\n"
-                        f"Подписка на **Роутер (WireGuard)** активирована на **{days} дней**.\n\n"
+                        f"Подписка на **Роутер (WireGuard)** активирована/продлена на **{days} дней**.\n\n"
                         f"Файл конфигурации прикреплён ниже."
             )
         else:
+            conn.close()
             await callback.message.answer("❌ Не удалось создать WireGuard клиента.")
 
     # ====================== VLESS ======================

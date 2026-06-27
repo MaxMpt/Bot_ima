@@ -82,7 +82,7 @@ def create_wireguard_client(user_id: int, username: str, days: int) -> tuple[str
 
         config_content = f"""[Interface]
 PrivateKey = {private_key}
-Address = {client_ip}/24
+Address = {client_ip}/32
 DNS = {WG_DNS}
 
 [Peer]
