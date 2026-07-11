@@ -5,7 +5,7 @@ import sqlite3
 import time
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from io import BytesIO
 
 from aiogram import Bot, Dispatcher, F
@@ -43,29 +43,12 @@ DB_NAME = os.getenv("DB_NAME", "vpn_bot.db")
 TINKOFF_COLLECTION_LINK = os.getenv("TINKOFF_COLLECTION_LINK", "https://tbank.ru/cf/1W5S3zUX13t")
 MASS_CONCURRENCY = int(os.getenv("MASS_CONCURRENCY", "6"))
 
-# ====================== СПИСОК СЕРВЕРОВ ======================
 SERVERS = [
-    {
-        "ip": "195.63.144.164",
-        "label": "Amsterdam-3",
-        "url": "https://195.63.144.164:2053/598138a170495e2917d81cf2d7e1617d/panel/api",
-        "token": "rLdhD2DK8Ntan1oB7NDTUERJFCT9LYarVgNdLT0KQrEHQMmS"
-    },
-    {
-        "ip": "89.124.64.16",
-        "label": "Amsterdam-1",
-        "url": "https://89.124.64.16:2053/cc01cf97a2729bee5a159848470f7716/panel/api",
-        "token": "a8MYoaSe9vWFxiA6CDZZ9ifqC1HAwcCkmSZAkCCLxneaCt7Y"
-    },
-    {
-        "ip": "103.112.70.204",
-        "label": "Amsterdam-Ch",
-        "url": "http://103.112.70.204:35380/2CGdTIvQfh00N1XGnv/panel/api",
-        "token": "Q87RsvJVdhKzQvxt6Vp6ARY5oz5FON8ndzYXY3zdjBx3MXGu"
-    },
+    {"ip": "195.63.144.164", "label": "Amsterdam-3", "url": "https://195.63.144.164:2053/598138a170495e2917d81cf2d7e1617d/panel/api", "token": "rLdhD2DK8Ntan1oB7NDTUERJFCT9LYarVgNdLT0KQrEHQMmS"},
+    {"ip": "89.124.64.16",   "label": "Amsterdam-1", "url": "https://89.124.64.16:2053/cc01cf97a2729bee5a159848470f7716/panel/api", "token": "a8MYoaSe9vWFxiA6CDZZ9ifqC1HAwcCkmSZAkCCLxneaCt7Y"},
+    {"ip": "103.112.70.204", "label": "Amsterdam-Ch", "url": "http://103.112.70.204:35380/2CGdTIvQfh00N1XGnv/panel/api", "token": "Q87RsvJVdhKzQvxt6Vp6ARY5oz5FON8ndzYXY3zdjBx3MXGu"},
 ]
 
-# Обязательные переменные
 SESSION = requests.Session()
 PRICES = {30: 219, 90: 599, 365: 2100}
 
@@ -98,18 +81,62 @@ def init_db():
     cursor = conn.cursor()
 
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS subscriptions (
+        CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
+            telegram_id INTEGER UNIQUE NOT NULL,
             username TEXT,
-            email TEXT,
-            config_type TEXT DEFAULT 'VLESS',
-            status TEXT DEFAULT 'pending',
-            device TEXT,
-            days INTEGER,
-            expiry_date TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            first_name TEXT,
+            last_name TEXT,
+            role TEXT NOT NULL DEFAULT 'client' CHECK (role IN ('client', 'admin', 'superadmin')),
+            language TEXT DEFAULT 'ru',
+            is_blocked INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id)")
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            plan_type TEXT NOT NULL CHECK (plan_type IN ('mobile', 'router')),
+            preferred_platform TEXT CHECK (preferred_platform IN ('android', 'ios')),
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'expired', 'cancelled', 'pending')),
+            duration_days INTEGER,
+            last_purchase_id INTEGER,
+            config_link TEXT,
+            config_file_path TEXT,
+            config_details TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_active_sub 
+        ON user_subscriptions (user_id, plan_type) 
+        WHERE status = 'active'
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS purchases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            subscription_id INTEGER REFERENCES user_subscriptions(id) ON DELETE SET NULL,
+            plan_type TEXT NOT NULL CHECK (plan_type IN ('mobile', 'router')),
+            chosen_platform TEXT CHECK (chosen_platform IN ('android', 'ios')),
+            duration_days INTEGER NOT NULL CHECK (duration_days > 0),
+            amount REAL NOT NULL DEFAULT 0,
+            currency TEXT DEFAULT 'RUB',
+            payment_provider TEXT,
+            external_payment_id TEXT,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'paid', 'failed', 'refunded', 'cancelled')),
+            paid_at TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            notes TEXT
         )
     """)
 
@@ -124,24 +151,35 @@ def init_db():
     conn.close()
 
 
-async def create_subscription(user_id: int, username: str, days: int, device: str):
+async def create_subscription(user_id: int, username: str, days: int, device: str = "ios"):
     def _create():
         conn = sqlite3.connect(DB_NAME, check_same_thread=False)
         cursor = conn.cursor()
-        email = f"tg{user_id}"
+
+        cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user_id,))
+        row = cursor.fetchone()
+        if row:
+            db_user_id = row[0]
+        else:
+            cursor.execute("INSERT INTO users (telegram_id, username, role) VALUES (?, ?, 'client')", (user_id, username))
+            db_user_id = cursor.lastrowid
+
+        plan_type = "router" if device == "router" else "mobile"
+        preferred_platform = device if device in ("android", "ios") else "ios"
+        start_date = datetime.now().strftime("%Y-%m-%d")
+        end_date = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+
         cursor.execute("""
-            INSERT INTO subscriptions (user_id, username, email, days, device, status)
-            VALUES (?, ?, ?, ?, ?, 'pending')
-            ON CONFLICT(user_id) DO UPDATE SET
-                username = excluded.username,
-                email = excluded.email,
-                days = excluded.days,
-                device = excluded.device,
-                status = 'pending'
-        """, (user_id, username, email, days, device))
+            INSERT INTO user_subscriptions (user_id, plan_type, preferred_platform, start_date, end_date, status, duration_days)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?)
+            ON CONFLICT(user_id, plan_type) WHERE status = 'active'
+            DO UPDATE SET end_date = excluded.end_date, duration_days = excluded.duration_days, status = 'pending'
+        """, (db_user_id, plan_type, preferred_platform, start_date, end_date, days))
+
         conn.commit()
         conn.close()
-        return email
+        return f"tg{user_id}"
+
     return await asyncio.to_thread(_create)
 
 
@@ -153,7 +191,6 @@ def make_request(url, token, method="GET", max_retries=4, **kwargs):
         try:
             return SESSION.request(method, url, headers=headers, verify=False, timeout=35, **kwargs)
         except Exception as e:
-            log.warning("Запрос к %s не удался (попытка %s/%s): %s", url, attempt + 1, max_retries, e)
             if attempt < max_retries - 1:
                 time.sleep(1.5)
     return None
@@ -181,11 +218,7 @@ def add_new_client(server, email, days=0):
         return None, None
     expiry = int((datetime.now() + timedelta(days=days)).timestamp() * 1000)
     client_uuid = str(uuid.uuid4())
-    payload = {
-        "client": {"id": client_uuid, "email": email, "flow": "xtls-rprx-vision",
-                   "limitIp": 1, "totalGB": 0, "enable": True, "expiryTime": expiry},
-        "inboundIds": [inbound["id"]]
-    }
+    payload = {"client": {"id": client_uuid, "email": email, "flow": "xtls-rprx-vision", "limitIp": 1, "totalGB": 0, "enable": True, "expiryTime": expiry}, "inboundIds": [inbound["id"]]}
     resp = make_request(f"{server['url']}/clients/add", server['token'], method="POST", json=payload)
     if resp and resp.status_code == 200 and resp.json().get("success"):
         return client_uuid, inbound
@@ -199,24 +232,11 @@ def extend_client_expiry(server, email: str, additional_days: int):
     client = get_client_from_inbound(inbound, email)
     if not client:
         return False
-
     current = client.get("expiryTime", 0)
     now = int(datetime.now().timestamp() * 1000)
-
-    if additional_days not in PRICES:
-        log.warning("extend_client_expiry: недопустимое значение days=%s для %s", additional_days, email)
-        return False
-
     base = current if current > now else now
     new_expiry = base + (additional_days * 24 * 60 * 60 * 1000)
-
-    payload = {
-        "id": client["id"], "email": email,
-        "flow": client.get("flow", "xtls-rprx-vision"),
-        "limitIp": client.get("limitIp", 1),
-        "totalGB": client.get("totalGB", 0),
-        "enable": True, "expiryTime": new_expiry
-    }
+    payload = {"id": client["id"], "email": email, "flow": client.get("flow", "xtls-rprx-vision"), "limitIp": client.get("limitIp", 1), "totalGB": client.get("totalGB", 0), "enable": True, "expiryTime": new_expiry}
     resp = make_request(f"{server['url']}/clients/update/{email}", server['token'], method="POST", json=payload)
     return bool(resp and resp.status_code == 200 and resp.json().get("success"))
 
@@ -239,7 +259,7 @@ def _delete_client_from_server(server, email: str) -> bool:
     if resp and resp.status_code == 200:
         try:
             return resp.json().get("success", False)
-        except Exception:
+        except:
             return False
     return False
 
@@ -249,18 +269,18 @@ def delete_client_everywhere(email: str):
     with ThreadPoolExecutor(max_workers=len(SERVERS)) as pool:
         futures = {pool.submit(_delete_client_from_server, s, email): s for s in SERVERS}
         for future in as_completed(futures):
-            server = futures[future]
             try:
-                ok = future.result()
-            except Exception as e:
-                log.warning("Ошибка удаления с %s: %s", server["label"], e)
-                ok = False
-            if ok:
-                deleted += 1
+                if future.result():
+                    deleted += 1
+            except:
+                pass
 
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM subscriptions WHERE email = ?", (email))
+    cursor.execute("""
+        DELETE FROM user_subscriptions 
+        WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)
+    """, (int(email.replace("tg", "")),))
     conn.commit()
     conn.close()
 
@@ -269,7 +289,7 @@ def delete_client_everywhere(email: str):
         repo = g.get_repo(GITHUB_REPO)
         file = repo.get_contents(f"{email}.txt")
         repo.delete_file(f"{email}.txt", f"Delete {email}", file.sha)
-    except Exception:
+    except:
         pass
 
     return deleted
@@ -294,7 +314,7 @@ async def update_github_file_completely(name: str, links: list):
             try:
                 file = repo.get_contents(filename)
                 repo.update_file(filename, f"Update {name}", content, file.sha)
-            except Exception:
+            except:
                 repo.create_file(filename, f"Create {name}", content)
         try:
             await asyncio.to_thread(_update)
@@ -315,10 +335,7 @@ def _check_server_days(server, email: str) -> int:
 
 
 async def get_user_remaining_days(email: str) -> int:
-    results = await asyncio.gather(
-        *[asyncio.to_thread(_check_server_days, server, email) for server in SERVERS],
-        return_exceptions=True
-    )
+    results = await asyncio.gather(*[asyncio.to_thread(_check_server_days, server, email) for server in SERVERS], return_exceptions=True)
     return max((r for r in results if isinstance(r, int)), default=0)
 
 
@@ -327,11 +344,7 @@ async def _notify_one_user(user_id: int, email: str, semaphore: asyncio.Semaphor
         try:
             remaining = await get_user_remaining_days(email)
             if remaining <= 1:
-                await bot.send_message(
-                    user_id,
-                    "⚠️ <b>Внимание!</b>\n\nВаша подписка VPN заканчивается в течение 1 дня.\nПродлите подписку.",
-                    parse_mode="HTML"
-                )
+                await bot.send_message(user_id, "⚠️ <b>Внимание!</b>\n\nВаша подписка VPN заканчивается в течение 1 дня.\nПродлите подписку.", parse_mode="HTML")
         except TelegramForbiddenError:
             pass
         except Exception as e:
@@ -344,15 +357,20 @@ async def notify_expiring_subscriptions():
         try:
             conn = sqlite3.connect(DB_NAME, check_same_thread=False)
             cursor = conn.cursor()
-            cursor.execute("SELECT user_id, email FROM subscriptions WHERE status = 'active'")
+            cursor.execute("""
+                SELECT u.telegram_id 
+                FROM user_subscriptions us
+                JOIN users u ON u.id = us.user_id
+                WHERE us.status = 'active' AND date(us.end_date) <= date('now', '+1 day')
+            """)
             users = cursor.fetchall()
             conn.close()
 
-            semaphore = asyncio.Semaphore(MASS_CONCURRENCY)
-            await asyncio.gather(*[
-                _notify_one_user(uid, email, semaphore)
-                for uid, email in users
-            ])
+            for (telegram_id,) in users:
+                try:
+                    await bot.send_message(telegram_id, "⚠️ <b>Внимание!</b>\n\nВаша подписка VPN заканчивается в течение 1 дня.\nПродлите подписку.", parse_mode="HTML")
+                except:
+                    pass
         except Exception as e:
             log.error("Ошибка в notify_expiring_subscriptions: %s", e)
 
@@ -372,8 +390,7 @@ async def _sync_one_user(email: str, semaphore: asyncio.Semaphore):
                 continue
             client = get_client_from_inbound(inbound, email)
             if client:
-                client_uuid = client.get("id")
-                links.append(build_vless_link(server["ip"], server["label"], inbound, client_uuid, email))
+                links.append(build_vless_link(server["ip"], server["label"], inbound, client["id"], email))
             else:
                 result = await asyncio.to_thread(add_new_client, server, email, remaining_days)
                 if result and result[0] and result[1]:
@@ -388,16 +405,14 @@ async def _sync_one_user(email: str, semaphore: asyncio.Semaphore):
 async def sync_all_clients():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute("SELECT email FROM subscriptions WHERE status IN ('active', 'pending', 'temporary')")
-    emails = [row[0] for row in cursor.fetchall()]
+    cursor.execute("SELECT telegram_id FROM users")
+    telegram_ids = [row[0] for row in cursor.fetchall()]
     conn.close()
 
+    emails = [f"tg{tid}" for tid in telegram_ids]
     total = len(emails)
     semaphore = asyncio.Semaphore(MASS_CONCURRENCY)
-    results = await asyncio.gather(
-        *[_sync_one_user(email, semaphore) for email in emails],
-        return_exceptions=True
-    )
+    results = await asyncio.gather(*[_sync_one_user(email, semaphore) for email in emails], return_exceptions=True)
     updated = sum(1 for r in results if r is True)
     return total, updated, total - updated
 
@@ -413,7 +428,42 @@ async def admin_mass_update(callback: CallbackQuery):
     await show_admin_panel(callback)
 
 
-# ====================== АДМИН: ВРЕМЕННЫЙ КОНФИГ ======================
+# ====================== АДМИН ======================
+
+@dp.callback_query(F.data == "admin_all_clients")
+async def admin_all_clients(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа", show_alert=True)
+
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT u.username, u.telegram_id, us.plan_type, us.preferred_platform, us.status, us.end_date
+        FROM user_subscriptions us
+        JOIN users u ON u.id = us.user_id
+    """)
+    clients = cursor.fetchall()
+    conn.close()
+
+    if not clients:
+        await callback.message.answer("Клиентов нет.")
+        return await show_admin_panel(callback)
+
+    text = "📋 <b>Все клиенты:</b>\n\n"
+    for username, telegram_id, plan_type, platform, status, end_date in clients:
+        display_name = f"@{username}" if username else f"tg{telegram_id}"
+        remaining = 0
+        if end_date:
+            try:
+                exp = datetime.strptime(end_date.split()[0], "%Y-%m-%d").date()
+                remaining = max(0, (exp - datetime.now().date()).days)
+            except:
+                pass
+        text += f"{display_name} | {plan_type} | {platform or '—'} | {status} | {remaining} дней\n"
+
+    await callback.message.answer(text, parse_mode="HTML")
+    await show_admin_panel(callback)
+
 
 @dp.callback_query(F.data == "admin_create_temp_config")
 async def admin_create_temp_config_start(callback: CallbackQuery, state: FSMContext):
@@ -460,59 +510,27 @@ async def admin_temp_config_days(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(f"Создаю конфиг для <code>{email}</code> на {days} дней...", parse_mode="HTML")
 
-    results = await asyncio.gather(
-        *[asyncio.to_thread(add_new_client, server, email, days) for server in SERVERS],
-        return_exceptions=True
-    )
-
+    results = await asyncio.gather(*[asyncio.to_thread(add_new_client, server, email, days) for server in SERVERS], return_exceptions=True)
     links = []
     for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            log.warning("Ошибка создания конфига на %s: %s", SERVERS[i]["label"], result)
-            continue
-        if result and result[0] and result[1]:
+        if isinstance(result, tuple) and result[0] and result[1]:
             links.append(build_vless_link(SERVERS[i]["ip"], SERVERS[i]["label"], result[1], result[0], email))
 
     if links:
         await update_github_file_completely(email, links)
-
-        temp_user_id = -abs(hash(email)) % 1000000000
-        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO subscriptions (user_id, username, email, days, device, status)
-            VALUES (?, ?, ?, ?, ?, 'temporary')
-        """, (temp_user_id, "manual_temp", email, days, device))
-        conn.commit()
-        conn.close()
-
-        text = f"✅ <b>Временный конфиг создан</b>\n\n"
-        text += f"📁 <b>Файл в GitHub:</b>\nhttps://raw.githubusercontent.com/{GITHUB_REPO}/main/{email}.txt\n\n"
-        for link in links:
-            text += f"<code>{link}</code>\n\n"
-        await message.answer(text, parse_mode="HTML")
+        await message.answer(f"✅ Временный конфиг создан.\n\nСсылка: https://raw.githubusercontent.com/{GITHUB_REPO}/main/{email}.txt")
     else:
-        await message.answer("Не удалось создать конфиг на серверах.")
+        await message.answer("Не удалось создать конфиг.")
 
     await show_admin_panel(message)
 
-
-# ====================== АДМИН: УДАЛЕНИЕ ======================
 
 @dp.callback_query(F.data == "admin_delete_client")
 async def admin_delete_client_start(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         return await callback.answer("Нет доступа", show_alert=True)
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Отмена", callback_data="admin_cancel_delete")]])
-    await callback.message.answer("Введите email клиента для удаления:", reply_markup=kb)
+    await callback.message.answer("Введите email клиента для удаления:")
     await state.set_state(AdminStates.waiting_for_email_to_delete)
-
-
-@dp.callback_query(F.data == "admin_cancel_delete")
-async def admin_cancel_delete(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.answer("Отменено")
-    await show_admin_panel(callback)
 
 
 @dp.message(AdminStates.waiting_for_email_to_delete)
@@ -521,57 +539,10 @@ async def admin_delete_client_confirm(message: Message, state: FSMContext):
         return
     email = message.text.strip()
     await state.clear()
-    await message.answer(f"Удаляю <code>{email}</code>...", parse_mode="HTML")
     deleted = await asyncio.to_thread(delete_client_everywhere, email)
-    await message.answer(f"✅ Удалено с {deleted} серверов", parse_mode="HTML")
+    await message.answer(f"✅ Удалено с {deleted} серверов")
     await show_admin_panel(message)
 
-
-# ====================== АДМИН: ВСЕ КЛИЕНТЫ (ИСПРАВЛЕНО) ======================
-
-@dp.callback_query(F.data == "admin_all_clients")
-async def admin_all_clients(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        return await callback.answer("Нет доступа", show_alert=True)
-
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT username, email, status, device, days, expiry_date 
-        FROM subscriptions
-    """)
-    clients = cursor.fetchall()
-    conn.close()
-
-    if not clients:
-        await callback.message.answer("Клиентов нет.")
-        return await show_admin_panel(callback)
-
-    text = "📋 <b>Все клиенты:</b>\n\n"
-
-    for row in clients:
-        username, email, status, device, days, expiry_date = row
-        display_name = f"@{username}" if username else "—"
-
-        if expiry_date:
-            try:
-                exp_str = expiry_date.split()[0]
-                exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
-                remaining = (exp_date - datetime.now().date()).days
-                if remaining < 0:
-                    remaining = 0
-            except:
-                remaining = days or 0
-        else:
-            remaining = days or 0
-
-        text += f"{display_name} | <code>{email}</code> | {status} | {device or '—'} | {remaining} дней\n"
-
-    await callback.message.answer(text, parse_mode="HTML")
-    await show_admin_panel(callback)
-
-
-# ====================== АДМИН: EXCEL ======================
 
 @dp.callback_query(F.data == "admin_export_excel")
 async def admin_export_excel(callback: CallbackQuery):
@@ -581,23 +552,27 @@ async def admin_export_excel(callback: CallbackQuery):
 
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute("SELECT username, email, status, device FROM subscriptions")
+    cursor.execute("""
+        SELECT u.username, u.telegram_id, us.plan_type, us.preferred_platform, us.status, us.end_date
+        FROM user_subscriptions us
+        JOIN users u ON u.id = us.user_id
+    """)
     clients = cursor.fetchall()
     conn.close()
 
-    semaphore = asyncio.Semaphore(MASS_CONCURRENCY)
-    async def _get_days(email):
-        async with semaphore:
-            return await get_user_remaining_days(email)
-
-    days_list = await asyncio.gather(*[_get_days(email) for _, email, _, _ in clients])
-
     wb = Workbook()
     ws = wb.active
-    ws.append(["Username", "Email", "Статус", "Устройство", "Осталось дней"])
-    for (username, email, status, device), remaining in zip(clients, days_list):
-        display_name = f"@{username}" if username else ""
-        ws.append([display_name, email, status, device or "—", remaining])
+    ws.append(["Username", "Telegram ID", "Тип", "Платформа", "Статус", "Осталось дней"])
+
+    for username, telegram_id, plan_type, platform, status, end_date in clients:
+        remaining = 0
+        if end_date:
+            try:
+                exp = datetime.strptime(end_date.split()[0], "%Y-%m-%d").date()
+                remaining = max(0, (exp - datetime.now().date()).days)
+            except:
+                pass
+        ws.append([f"@{username}" if username else "", telegram_id, plan_type, platform or "", status, remaining])
 
     buffer = BytesIO()
     wb.save(buffer)
@@ -610,7 +585,7 @@ async def admin_export_excel(callback: CallbackQuery):
     await show_admin_panel(callback)
 
 
-# ====================== БОТ ======================
+# ====================== ПОЛЬЗОВАТЕЛЬ ======================
 
 def get_main_keyboard(user_id: int):
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -639,13 +614,6 @@ async def check_days(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "buy_subscription")
 async def choose_device(callback: CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM subscriptions WHERE user_id = ? AND status = 'pending'", (user_id,))
-    conn.commit()
-    conn.close()
-
     await callback.answer()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Android", callback_data="device_android")],
@@ -731,14 +699,8 @@ async def create_order(callback: CallbackQuery, state: FSMContext):
 
     for admin_id in ADMIN_IDS:
         try:
-            await bot.send_message(
-                admin_id,
-                f"🆕 <b>Новая заявка!</b>\n\nПользователь: @{username}\n"
-                f"Telegram ID: <code>{user_id}</code>\nКонфиг: <code>{email}</code>\n"
-                f"Устройство: {device} | Срок: <b>{days} дней</b> | Сумма: <b>{price} ₽</b>",
-                parse_mode="HTML"
-            )
-        except Exception:
+            await bot.send_message(admin_id, f"🆕 <b>Новая заявка!</b>\n\nПользователь: @{username}\nTelegram ID: <code>{user_id}</code>\nКонфиг: <code>{email}</code>\nУстройство: {device} | Срок: <b>{days} дней</b> | Сумма: <b>{price} ₽</b>", parse_mode="HTML")
+        except:
             pass
 
 
@@ -760,21 +722,14 @@ async def user_confirmed_payment(callback: CallbackQuery):
     message_ids = {}
     for admin_id in ADMIN_IDS:
         try:
-            msg = await bot.send_message(
-                admin_id,
-                f"💰 Пользователь подтвердил оплату!\n\n@{username} (ID: <code>{user_id}</code>)\n"
-                f"Email: <code>{email}</code>\nСрок: {days} дней | Устройство: {device}",
-                parse_mode="HTML",
-                reply_markup=kb
-            )
+            msg = await bot.send_message(admin_id, f"💰 Пользователь подтвердил оплату!\n\n@{username} (ID: <code>{user_id}</code>)\nEmail: <code>{email}</code>\nСрок: {days} дней | Устройство: {device}", parse_mode="HTML", reply_markup=kb)
             message_ids[str(admin_id)] = msg.message_id
-        except Exception:
+        except:
             pass
 
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO payment_notifications (email, message_ids) VALUES (?, ?)",
-                   (email, json.dumps(message_ids)))
+    cursor.execute("INSERT OR REPLACE INTO payment_notifications (email, message_ids) VALUES (?, ?)", (email, json.dumps(message_ids)))
     conn.commit()
     conn.close()
 
@@ -791,9 +746,9 @@ async def _delete_payment_notifications(email: str):
         for admin_id_str, msg_id in message_ids.items():
             try:
                 await bot.delete_message(chat_id=int(admin_id_str), message_id=msg_id)
-            except Exception:
+            except:
                 pass
-        cursor.execute("DELETE FROM payment_notifications WHERE email = ?", (email,))
+        cursor.execute("DELETE FROM payment_notifications WHERE email = ?", (email))
         conn.commit()
     conn.close()
 
@@ -808,40 +763,43 @@ async def approve_payment(callback: CallbackQuery):
     user_id = int(data[1])
     days = int(data[2])
     email = data[3]
-    device = data[4] if len(data) > 4 else "android"
+    device = data[4] if len(data) > 4 else "ios"
 
     await _delete_payment_notifications(email)
 
-    results = await asyncio.gather(
-        *[asyncio.to_thread(create_or_extend_client, server, email, days) for server in SERVERS],
-        return_exceptions=True
-    )
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return await callback.message.answer("Пользователь не найден в базе.")
 
+    db_user_id = row[0]
+    plan_type = "router" if device == "router" else "mobile"
+    preferred_platform = device if device in ("android", "ios") else "ios"
+    start_date = datetime.now().strftime("%Y-%m-%d")
+    end_date = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+
+    cursor.execute("""
+        INSERT INTO user_subscriptions (user_id, plan_type, preferred_platform, start_date, end_date, status, duration_days)
+        VALUES (?, ?, ?, ?, ?, 'active', ?)
+        ON CONFLICT(user_id, plan_type) WHERE status = 'active'
+        DO UPDATE SET end_date = excluded.end_date, duration_days = excluded.duration_days, status = 'active'
+    """, (db_user_id, plan_type, preferred_platform, start_date, end_date, days))
+    conn.commit()
+    conn.close()
+
+    results = await asyncio.gather(*[asyncio.to_thread(create_or_extend_client, server, email, days) for server in SERVERS], return_exceptions=True)
     links = []
     for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            log.error("Ошибка на сервере %s: %s", SERVERS[i]["label"], result)
-            continue
         if isinstance(result, tuple) and result[0] and result[1]:
             links.append(build_vless_link(SERVERS[i]["ip"], SERVERS[i]["label"], result[1], result[0], email))
 
     if links:
         await update_github_file_completely(email, links)
-
-        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE subscriptions SET status = 'active' WHERE user_id = ?", (user_id,))
-        conn.commit()
-        conn.close()
-
         try:
-            await bot.send_message(
-                user_id,
-                f"✅ Оплата подтверждена!\n\nПодписка активирована на <b>{days} дней</b>.\n\n"
-                f"<b>Ссылка на подписку:</b>\n<code>https://raw.githubusercontent.com/{GITHUB_REPO}/main/{email}.txt</code>",
-                parse_mode="HTML"
-            )
-
+            await bot.send_message(user_id, f"✅ Оплата подтверждена!\n\nПодписка активирована на <b>{days} дней</b>.\n\nСсылка: <code>https://raw.githubusercontent.com/{GITHUB_REPO}/main/{email}.txt</code>", parse_mode="HTML")
             instruction_file = INSTRUCTION_IOS if device == "ios" else INSTRUCTION_ANDROID
             await bot.send_document(user_id, FSInputFile(instruction_file), caption="📄 Инструкция по установке VPN")
         except Exception as e:
@@ -865,14 +823,14 @@ async def reject_payment(callback: CallbackQuery):
 
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute("UPDATE subscriptions SET status = 'rejected' WHERE user_id = ?", (user_id,))
+    cursor.execute("UPDATE user_subscriptions SET status = 'cancelled' WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)", (user_id,))
     conn.commit()
     conn.close()
 
     await callback.message.answer("Заявка отклонена.")
     try:
         await bot.send_message(user_id, "❌ Ваша заявка была отклонена.", parse_mode="HTML")
-    except Exception:
+    except:
         pass
 
 
