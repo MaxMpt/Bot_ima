@@ -5,7 +5,7 @@ import sqlite3
 import time
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from io import BytesIO
 
 from aiogram import Bot, Dispatcher, F
@@ -43,6 +43,28 @@ DB_NAME = os.getenv("DB_NAME", "vpn_bot.db")
 TINKOFF_COLLECTION_LINK = os.getenv("TINKOFF_COLLECTION_LINK", "https://tbank.ru/cf/1W5S3zUX13t")
 MASS_CONCURRENCY = int(os.getenv("MASS_CONCURRENCY", "6"))
 
+# ====================== СПИСОК СЕРВЕРОВ ======================
+SERVERS = [
+    {
+        "ip": "195.63.144.164",
+        "label": "Amsterdam-3",
+        "url": "https://195.63.144.164:2053/598138a170495e2917d81cf2d7e1617d/panel/api",
+        "token": "rLdhD2DK8Ntan1oB7NDTUERJFCT9LYarVgNdLT0KQrEHQMmS"
+    },
+    {
+        "ip": "89.124.64.16",
+        "label": "Amsterdam-1",
+        "url": "https://89.124.64.16:2053/cc01cf97a2729bee5a159848470f7716/panel/api",
+        "token": "a8MYoaSe9vWFxiA6CDZZ9ifqC1HAwcCkmSZAkCCLxneaCt7Y"
+    },
+    {
+        "ip": "103.112.70.204",
+        "label": "Amsterdam-Ch",
+        "url": "http://103.112.70.204:35380/2CGdTIvQfh00N1XGnv/panel/api",
+        "token": "Q87RsvJVdhKzQvxt6Vp6ARY5oz5FON8ndzYXY3zdjBx3MXGu"
+    },
+]
+
 # Обязательные переменные
 SESSION = requests.Session()
 PRICES = {30: 219, 90: 599, 365: 2100}
@@ -74,24 +96,30 @@ def is_admin(user_id: int) -> bool:
 def init_db():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS subscriptions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER UNIQUE,
+            user_id INTEGER,
             username TEXT,
             email TEXT,
-            days INTEGER,
-            device TEXT,
+            config_type TEXT DEFAULT 'VLESS',
             status TEXT DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            device TEXT,
+            days INTEGER,
+            expiry_date TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS payment_notifications (
             email TEXT PRIMARY KEY,
             message_ids TEXT
         )
     """)
+
     conn.commit()
     conn.close()
 
@@ -232,7 +260,7 @@ def delete_client_everywhere(email: str):
 
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM subscriptions WHERE email = ?", (email,))
+    cursor.execute("DELETE FROM subscriptions WHERE email = ?", (email))
     conn.commit()
     conn.close()
 
@@ -499,7 +527,7 @@ async def admin_delete_client_confirm(message: Message, state: FSMContext):
     await show_admin_panel(message)
 
 
-# ====================== АДМИН: ВСЕ КЛИЕНТЫ ======================
+# ====================== АДМИН: ВСЕ КЛИЕНТЫ (ИСПРАВЛЕНО) ======================
 
 @dp.callback_query(F.data == "admin_all_clients")
 async def admin_all_clients(callback: CallbackQuery):
@@ -508,7 +536,10 @@ async def admin_all_clients(callback: CallbackQuery):
 
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute("SELECT username, email, status, device FROM subscriptions")
+    cursor.execute("""
+        SELECT username, email, status, device, days, expiry_date 
+        FROM subscriptions
+    """)
     clients = cursor.fetchall()
     conn.close()
 
@@ -516,16 +547,24 @@ async def admin_all_clients(callback: CallbackQuery):
         await callback.message.answer("Клиентов нет.")
         return await show_admin_panel(callback)
 
-    semaphore = asyncio.Semaphore(MASS_CONCURRENCY)
-    async def _get_days(email):
-        async with semaphore:
-            return await get_user_remaining_days(email)
-
-    days_list = await asyncio.gather(*[_get_days(email) for _, email, _, _ in clients])
-
     text = "📋 <b>Все клиенты:</b>\n\n"
-    for (username, email, status, device), remaining in zip(clients, days_list):
+
+    for row in clients:
+        username, email, status, device, days, expiry_date = row
         display_name = f"@{username}" if username else "—"
+
+        if expiry_date:
+            try:
+                exp_str = expiry_date.split()[0]
+                exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+                remaining = (exp_date - datetime.now().date()).days
+                if remaining < 0:
+                    remaining = 0
+            except:
+                remaining = days or 0
+        else:
+            remaining = days or 0
+
         text += f"{display_name} | <code>{email}</code> | {status} | {device or '—'} | {remaining} дней\n"
 
     await callback.message.answer(text, parse_mode="HTML")
