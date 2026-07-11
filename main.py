@@ -275,7 +275,7 @@ def delete_client_everywhere(email: str):
             except:
                 pass
 
-    # === Исправленный блок ===
+    # === Новая правильная версия удаления из базы ===
     try:
         telegram_id = int(email.replace("tg", ""))
         conn = sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -443,29 +443,40 @@ async def admin_all_clients(callback: CallbackQuery):
 
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
+
+    # Показываем всех пользователей из таблицы users
     cursor.execute("""
-        SELECT u.username, u.telegram_id, us.plan_type, us.preferred_platform, us.status, us.end_date
-        FROM user_subscriptions us
-        JOIN users u ON u.id = us.user_id
+        SELECT u.telegram_id, u.username, u.role,
+               COALESCE(SUM(us.duration_days), 0) as total_days,
+               MAX(us.end_date) as last_end_date,
+               COUNT(us.id) as subscriptions_count
+        FROM users u
+        LEFT JOIN user_subscriptions us ON us.user_id = u.id
+        GROUP BY u.id
+        ORDER BY u.id
     """)
     clients = cursor.fetchall()
     conn.close()
 
     if not clients:
-        await callback.message.answer("Клиентов нет.")
+        await callback.message.answer("Пользователей нет.")
         return await show_admin_panel(callback)
 
-    text = "📋 <b>Все клиенты:</b>\n\n"
-    for username, telegram_id, plan_type, platform, status, end_date in clients:
+    text = "📋 <b>Все пользователи:</b>\n\n"
+
+    for telegram_id, username, role, total_days, last_end_date, sub_count in clients:
         display_name = f"@{username}" if username else f"tg{telegram_id}"
+
+        # Считаем оставшиеся дни
         remaining = 0
-        if end_date:
+        if last_end_date:
             try:
-                exp = datetime.strptime(end_date.split()[0], "%Y-%m-%d").date()
+                exp = datetime.strptime(last_end_date.split()[0], "%Y-%m-%d").date()
                 remaining = max(0, (exp - datetime.now().date()).days)
             except:
-                pass
-        text += f"{display_name} | {plan_type} | {platform or '—'} | {status} | {remaining} дней\n"
+                remaining = 0
+
+        text += f"{display_name} | Роль: {role} | Всего дней: {total_days} | Осталось: {remaining}\n"
 
     await callback.message.answer(text, parse_mode="HTML")
     await show_admin_panel(callback)
