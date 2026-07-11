@@ -765,7 +765,7 @@ async def _delete_payment_notifications(email: str):
                 await bot.delete_message(chat_id=int(admin_id_str), message_id=msg_id)
             except:
                 pass
-        cursor.execute("DELETE FROM payment_notifications WHERE email = ?", (email))
+        cursor.execute("DELETE FROM payment_notifications WHERE email = ?", (email,))
         conn.commit()
     conn.close()
 
