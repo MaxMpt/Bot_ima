@@ -359,7 +359,7 @@ async def _notify_one_user(user_id: int, email: str, semaphore: asyncio.Semaphor
 
 async def notify_expiring_subscriptions():
     while True:
-        await asyncio.sleep(100)  # Проверяем раз в сутки
+        await asyncio.sleep(86400)  # Проверяем раз в сутки
 
         try:
             conn = sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -464,7 +464,6 @@ async def admin_mass_update(callback: CallbackQuery):
 
 
 # ====================== АДМИН ======================
-
 @dp.callback_query(F.data == "admin_all_clients")
 async def admin_all_clients(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -477,35 +476,47 @@ async def admin_all_clients(callback: CallbackQuery):
         SELECT 
             u.telegram_id,
             u.username,
-            u.role,
-            COALESCE(SUM(us.duration_days), 0) as total_days,
-            MAX(us.end_date) as last_end_date
+            us.plan_type,
+            us.preferred_platform,
+            us.status,
+            us.end_date,
+            us.duration_days
         FROM users u
-        LEFT JOIN user_subscriptions us ON us.user_id = u.id
-        GROUP BY u.id
-        ORDER BY u.id
+        LEFT JOIN user_subscriptions us 
+            ON us.user_id = u.id AND us.status = 'active'
+        ORDER BY u.id, us.plan_type
     """)
-    clients = cursor.fetchall()
+    rows = cursor.fetchall()
     conn.close()
 
-    if not clients:
+    if not rows:
         await callback.message.answer("Пользователей нет.")
         return await show_admin_panel(callback)
 
-    text = "📋 <b>Все пользователи:</b>\n\n"
+    text = "📋 <b>Все пользователи и активные подписки:</b>\n\n"
 
-    for telegram_id, username, role, total_days, last_end_date in clients:
+    current_user = None
+    for telegram_id, username, plan_type, platform, status, end_date, duration_days in rows:
         display_name = f"@{username}" if username else f"tg{telegram_id}"
 
-        remaining = 0
-        if last_end_date:
-            try:
-                exp = datetime.strptime(last_end_date.split()[0], "%Y-%m-%d").date()
-                remaining = max(0, (exp - datetime.now().date()).days)
-            except:
-                remaining = 0
+        if current_user != telegram_id:
+            if current_user is not None:
+                text += "\n"
+            current_user = telegram_id
+            text += f"**{display_name}** (ID: {telegram_id})\n"
 
-        text += f"{display_name} | Роль: {role} | Всего дней: {total_days} | Осталось: {remaining}\n"
+        if plan_type:
+            remaining = 0
+            if end_date:
+                try:
+                    exp = datetime.strptime(end_date.split()[0], "%Y-%m-%d").date()
+                    remaining = max(0, (exp - datetime.now().date()).days)
+                except:
+                    remaining = 0
+
+            text += f"  • {plan_type} ({platform or '—'}): осталось **{remaining} дней** (куплено {duration_days})\n"
+        else:
+            text += "  • Нет активных подписок\n"
 
     await callback.message.answer(text, parse_mode="HTML")
     await show_admin_panel(callback)
