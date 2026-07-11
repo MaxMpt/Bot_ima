@@ -275,7 +275,7 @@ def delete_client_everywhere(email: str):
             except:
                 pass
 
-    # === Новая правильная версия удаления из базы ===
+    # Удаляем подписку из базы
     try:
         telegram_id = int(email.replace("tg", ""))
         conn = sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -444,12 +444,13 @@ async def admin_all_clients(callback: CallbackQuery):
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
 
-    # Показываем всех пользователей из таблицы users
     cursor.execute("""
-        SELECT u.telegram_id, u.username, u.role,
-               COALESCE(SUM(us.duration_days), 0) as total_days,
-               MAX(us.end_date) as last_end_date,
-               COUNT(us.id) as subscriptions_count
+        SELECT 
+            u.telegram_id,
+            u.username,
+            u.role,
+            COALESCE(SUM(us.duration_days), 0) as total_days,
+            MAX(us.end_date) as last_end_date
         FROM users u
         LEFT JOIN user_subscriptions us ON us.user_id = u.id
         GROUP BY u.id
@@ -464,10 +465,9 @@ async def admin_all_clients(callback: CallbackQuery):
 
     text = "📋 <b>Все пользователи:</b>\n\n"
 
-    for telegram_id, username, role, total_days, last_end_date, sub_count in clients:
+    for telegram_id, username, role, total_days, last_end_date in clients:
         display_name = f"@{username}" if username else f"tg{telegram_id}"
 
-        # Считаем оставшиеся дни
         remaining = 0
         if last_end_date:
             try:
