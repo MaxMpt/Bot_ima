@@ -359,24 +359,53 @@ async def _notify_one_user(user_id: int, email: str, semaphore: asyncio.Semaphor
 
 async def notify_expiring_subscriptions():
     while True:
-        await asyncio.sleep(86400)
+        await asyncio.sleep(100)  # Проверяем раз в сутки
+
         try:
             conn = sqlite3.connect(DB_NAME, check_same_thread=False)
             cursor = conn.cursor()
+
+            # Находим все активные подписки, которые заканчиваются в течение 1 дня
             cursor.execute("""
-                SELECT u.telegram_id 
+                SELECT 
+                    u.telegram_id,
+                    u.username,
+                    us.plan_type,
+                    us.preferred_platform,
+                    us.end_date
                 FROM user_subscriptions us
                 JOIN users u ON u.id = us.user_id
-                WHERE us.status = 'active' AND date(us.end_date) <= date('now', '+1 day')
+                WHERE us.status = 'active'
+                  AND date(us.end_date) <= date('now', '+1 day')
             """)
-            users = cursor.fetchall()
+            expiring = cursor.fetchall()
             conn.close()
 
-            for (telegram_id,) in users:
+            for telegram_id, username, plan_type, platform, end_date in expiring:
                 try:
-                    await bot.send_message(telegram_id, "⚠️ <b>Внимание!</b>\n\nВаша подписка VPN заканчивается в течение 1 дня.\nПродлите подписку.", parse_mode="HTML")
-                except:
-                    pass
+                    remaining = 0
+                    if end_date:
+                        try:
+                            exp = datetime.strptime(end_date.split()[0], "%Y-%m-%d").date()
+                            remaining = max(0, (exp - datetime.now().date()).days)
+                        except:
+                            remaining = 0
+
+                    text = (
+                        f"⚠️ <b>Внимание!</b>\n\n"
+                        f"У тебя заканчивается подписка на <b>{plan_type}</b> "
+                        f"({platform or '—'}).\n"
+                        f"Осталось дней: <b>{remaining}</b>\n\n"
+                        f"Продли подписку, чтобы не остаться без доступа."
+                    )
+
+                    await bot.send_message(telegram_id, text, parse_mode="HTML")
+
+                except TelegramForbiddenError:
+                    pass  # Пользователь заблокировал бота
+                except Exception as e:
+                    log.error("Ошибка отправки уведомления пользователю %s: %s", telegram_id, e)
+
         except Exception as e:
             log.error("Ошибка в notify_expiring_subscriptions: %s", e)
 
@@ -784,8 +813,13 @@ async def approve_payment(callback: CallbackQuery):
 
     await _delete_payment_notifications(email)
 
+    plan_type = "router" if device == "router" else "mobile"
+    preferred_platform = device if device in ("android", "ios") else "ios"
+
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
+
+    # Ищем пользователя
     cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user_id,))
     row = cursor.fetchone()
     if not row:
@@ -793,21 +827,50 @@ async def approve_payment(callback: CallbackQuery):
         return await callback.message.answer("Пользователь не найден в базе.")
 
     db_user_id = row[0]
-    plan_type = "router" if device == "router" else "mobile"
-    preferred_platform = device if device in ("android", "ios") else "ios"
-    start_date = datetime.now().strftime("%Y-%m-%d")
-    end_date = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
 
+    # Ищем активную подписку этого типа
     cursor.execute("""
-        INSERT INTO user_subscriptions (user_id, plan_type, preferred_platform, start_date, end_date, status, duration_days)
-        VALUES (?, ?, ?, ?, ?, 'active', ?)
-        ON CONFLICT(user_id, plan_type) WHERE status = 'active'
-        DO UPDATE SET end_date = excluded.end_date, duration_days = excluded.duration_days, status = 'active'
-    """, (db_user_id, plan_type, preferred_platform, start_date, end_date, days))
+        SELECT id, end_date 
+        FROM user_subscriptions 
+        WHERE user_id = ? AND plan_type = ? AND status = 'active'
+    """, (db_user_id, plan_type))
+    existing = cursor.fetchone()
+
+    if existing:
+        # === НАКОПЛЕНИЕ ДНЕЙ ===
+        sub_id, current_end = existing
+        try:
+            base_date = datetime.strptime(current_end.split()[0], "%Y-%m-%d")
+        except:
+            base_date = datetime.now()
+
+        new_end_date = (base_date + timedelta(days=days)).strftime("%Y-%m-%d")
+
+        cursor.execute("""
+            UPDATE user_subscriptions 
+            SET end_date = ?, duration_days = duration_days + ?, updated_at = datetime('now')
+            WHERE id = ?
+        """, (new_end_date, days, sub_id))
+    else:
+        # === НОВАЯ ПОДПИСКА ===
+        start_date = datetime.now().strftime("%Y-%m-%d")
+        end_date = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+
+        cursor.execute("""
+            INSERT INTO user_subscriptions 
+            (user_id, plan_type, preferred_platform, start_date, end_date, status, duration_days)
+            VALUES (?, ?, ?, ?, ?, 'active', ?)
+        """, (db_user_id, plan_type, preferred_platform, start_date, end_date, days))
+
     conn.commit()
     conn.close()
 
-    results = await asyncio.gather(*[asyncio.to_thread(create_or_extend_client, server, email, days) for server in SERVERS], return_exceptions=True)
+    # Создаём/продлеваем клиентов на 3x-ui серверах
+    results = await asyncio.gather(
+        *[asyncio.to_thread(create_or_extend_client, server, email, days) for server in SERVERS],
+        return_exceptions=True
+    )
+
     links = []
     for i, result in enumerate(results):
         if isinstance(result, tuple) and result[0] and result[1]:
@@ -815,14 +878,22 @@ async def approve_payment(callback: CallbackQuery):
 
     if links:
         await update_github_file_completely(email, links)
+
         try:
-            await bot.send_message(user_id, f"✅ Оплата подтверждена!\n\nПодписка активирована на <b>{days} дней</b>.\n\nСсылка: <code>https://raw.githubusercontent.com/{GITHUB_REPO}/main/{email}.txt</code>", parse_mode="HTML")
+            await bot.send_message(
+                user_id,
+                f"✅ Оплата подтверждена!\n\n"
+                f"Подписка на **{plan_type}** активирована/продлена на <b>{days} дней</b>.\n\n"
+                f"Ссылка на конфиг: <code>https://raw.githubusercontent.com/{GITHUB_REPO}/main/{email}.txt</code>",
+                parse_mode="HTML"
+            )
+
             instruction_file = INSTRUCTION_IOS if device == "ios" else INSTRUCTION_ANDROID
-            await bot.send_document(user_id, FSInputFile(instruction_file), caption="📄 Инструкция по установке VPN")
+            await bot.send_document(user_id, FSInputFile(instruction_file), caption="📄 Инструкция")
         except Exception as e:
             log.error("Ошибка отправки пользователю: %s", e)
     else:
-        await callback.message.answer("❌ Не удалось создать/продлить клиента.")
+        await callback.message.answer("❌ Не удалось создать/продлить клиента на серверах.")
 
 
 @dp.callback_query(F.data.startswith("reject_"))
