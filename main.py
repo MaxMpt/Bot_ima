@@ -275,15 +275,21 @@ def delete_client_everywhere(email: str):
             except:
                 pass
 
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("""
-        DELETE FROM user_subscriptions 
-        WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)
-    """, (int(email.replace("tg", "")),))
-    conn.commit()
-    conn.close()
+    # === Исправленный блок ===
+    try:
+        telegram_id = int(email.replace("tg", ""))
+        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("""
+            DELETE FROM user_subscriptions 
+            WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)
+        """, (telegram_id,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.error("Ошибка удаления из базы: %s", e)
 
+    # Удаляем файл из GitHub
     try:
         g = gh.Github(auth=gh.Auth.Token(GITHUB_TOKEN))
         repo = g.get_repo(GITHUB_REPO)
