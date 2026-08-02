@@ -52,7 +52,7 @@ SERVERS = [
     {
         "ip": "89.127.211.136",
         "label": "Amsterdam-1.1",
-        "url": "https://89.127.211.136:16233/Nirreexag8xbcV8Mtv/panel/api",
+        "url": "http://89.127.211.136:16233/Nirreexag8xbcV8Mtv/panel/api",
         "token": "G90Xn0b6bMlWVinRVdxef569nO6zJhvplb6XJmQP0yNlITQM",
     },
     {
