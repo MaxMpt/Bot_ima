@@ -50,10 +50,10 @@ LIMIT_IP = 2
 
 SERVERS = [
     {
-        "ip": "195.63.144.164",
-        "label": "Amsterdam-3",
-        "url": "https://195.63.144.164:2053/598138a170495e2917d81cf2d7e1617d/panel/api",
-        "token": "rLdhD2DK8Ntan1oB7NDTUERJFCT9LYarVgNdLT0KQrEHQMmS",
+        "ip": "89.127.211.136",
+        "label": "Amsterdam-1.1",
+        "url": "https://89.127.211.136:16233/Nirreexag8xbcV8Mtv/panel/api",
+        "token": "G90Xn0b6bMlWVinRVdxef569nO6zJhvplb6XJmQP0yNlITQM",
     },
     {
         "ip": "89.124.64.16",
@@ -63,7 +63,7 @@ SERVERS = [
     },
     {
         "ip": "89.40.70.124",
-        "label": "Amsterdam-aVds",
+        "label": "Amsterdam-2.1",
         "url": "http://89.40.70.124:45903/OY02850ZgFN4LJMaCE/panel/api",
         "token": "VqWD9uwHKZqX2xtObIhlcOw4oPcrA2lR6JeTSkfmLO4z1DE4",
     },
