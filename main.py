@@ -56,12 +56,6 @@ SERVERS = [
         "token": "G90Xn0b6bMlWVinRVdxef569nO6zJhvplb6XJmQP0yNlITQM",
     },
     {
-        "ip": "89.124.64.16",
-        "label": "Amsterdam-1",
-        "url": "https://89.124.64.16:2053/cc01cf97a2729bee5a159848470f7716/panel/api",
-        "token": "a8MYoaSe9vWFxiA6CDZZ9ifqC1HAwcCkmSZAkCCLxneaCt7Y",
-    },
-    {
         "ip": "89.40.70.124",
         "label": "Amsterdam-2.1",
         "url": "http://89.40.70.124:45903/OY02850ZgFN4LJMaCE/panel/api",
