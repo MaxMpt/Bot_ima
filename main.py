@@ -46,7 +46,7 @@ MASS_CONCURRENCY = int(os.getenv("MASS_CONCURRENCY", "6"))
 SERVERS = [
     {"ip": "195.63.144.164", "label": "Amsterdam-3", "url": "https://195.63.144.164:2053/598138a170495e2917d81cf2d7e1617d/panel/api", "token": "rLdhD2DK8Ntan1oB7NDTUERJFCT9LYarVgNdLT0KQrEHQMmS"},
     {"ip": "89.124.64.16",   "label": "Amsterdam-1", "url": "https://89.124.64.16:2053/cc01cf97a2729bee5a159848470f7716/panel/api", "token": "a8MYoaSe9vWFxiA6CDZZ9ifqC1HAwcCkmSZAkCCLxneaCt7Y"},
-    {"ip": "103.112.70.204", "label": "Amsterdam-Ch", "url": "http://103.112.70.204:35380/2CGdTIvQfh00N1XGnv/panel/api", "token": "Q87RsvJVdhKzQvxt6Vp6ARY5oz5FON8ndzYXY3zdjBx3MXGu"},
+    {"ip": "89.40.70.124", "label": "Amsterdam-aVds", "url": "http://89.40.70.124:45903/OY02850ZgFN4LJMaCE/panel/api", "token": "VqWD9uwHKZqX2xtObIhlcOw4oPcrA2lR6JeTSkfmLO4z1DE4"},
 ]
 
 SESSION = requests.Session()
@@ -305,10 +305,18 @@ def build_vless_link(server_ip, label, inbound, client_uuid, name):
     reality = inbound["streamSettings"]["realitySettings"]
     pk = reality["settings"]["publicKey"]
     sid = reality.get("shortIds", [""])[0]
-    spx = reality.get("spiderX", "/")
+    spx = reality.get("spiderX", "/") or "/"
     port = inbound.get("port", 443)
-    return f"vless://{client_uuid}@{server_ip}:{port}?encryption=none&flow=xtls-rprx-vision&fp=firefox&pbk={pk}&security=reality&sid={sid}&sni=www.sony.com&spx={quote(spx, safe='')}&type=tcp#{label}-{name}"
+    sni_list = reality.get("serverNames") or []
+    sni = sni_list[0] if sni_list else "dl.google.com"
+    fp = reality.get("settings", {}).get("fingerprint") or "firefox"
 
+    return (
+        f"vless://{client_uuid}@{server_ip}:{port}?"
+        f"encryption=none&flow=xtls-rprx-vision&fp={fp}&pbk={pk}"
+        f"&security=reality&sid={sid}&sni={sni}"
+        f"&spx={quote(spx, safe='')}&type=tcp#{label}-{name}"
+    )
 
 async def update_github_file_completely(name: str, links: list):
     async with github_lock:
