@@ -484,43 +484,6 @@ def delete_client_everywhere(email: str):
 
     return deleted
 
-    try:
-        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            DELETE FROM user_subscriptions
-            WHERE user_id IN (SELECT id FROM users WHERE config_email = ?)
-            """,
-            (email,),
-        )
-        if email.startswith("tg"):
-            try:
-                tid = int(email[2:])
-                cursor.execute(
-                    """
-                    DELETE FROM user_subscriptions
-                    WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)
-                    """,
-                    (tid,),
-                )
-            except ValueError:
-                pass
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        log.error("Ошибка удаления из базы: %s", e)
-
-    try:
-        g = gh.Github(auth=gh.Auth.Token(GITHUB_TOKEN))
-        repo = g.get_repo(GITHUB_REPO)
-        file = repo.get_contents(f"{email}.txt")
-        repo.delete_file(f"{email}.txt", f"Delete {email}", file.sha)
-    except Exception:
-        pass
-
-    return deleted
-
 
 def build_vless_link(server_ip, label, inbound, client_uuid, name):
     stream = inbound.get("streamSettings") or {}
@@ -660,6 +623,27 @@ def _check_server_days(server, email: str) -> int:
 async def get_user_remaining_days(email: str) -> int:
     remaining, _ = await asyncio.to_thread(resolve_remaining_and_expiry, email)
     return max(0, remaining or 0)
+
+
+def get_user_payments(telegram_id: int) -> list:
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT p.paid_at, p.amount, p.duration_days, p.chosen_platform,
+               p.plan_type, p.status, p.created_at
+        FROM purchases p
+        JOIN users u ON u.id = p.user_id
+        WHERE u.telegram_id = ?
+          AND p.status = 'paid'
+        ORDER BY COALESCE(p.paid_at, p.created_at) DESC
+        LIMIT 50
+        """,
+        (telegram_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
 
 
 def collect_all_emails() -> list:
@@ -1040,8 +1024,10 @@ async def admin_export_excel(callback: CallbackQuery):
 def get_main_keyboard(user_id: int):
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Проверить дни подписки", callback_data="check_days")],
-            [InlineKeyboardButton(text="Купить / Продлить подписку", callback_data="buy_subscription")],
+            [InlineKeyboardButton(text="📅 Проверить дни подписки", callback_data="check_days")],
+            [InlineKeyboardButton(text="🛒 Купить / Продлить", callback_data="buy_subscription")],
+            [InlineKeyboardButton(text="🔌 Подключить VPN", callback_data="buy_subscription")],
+            [InlineKeyboardButton(text="📊 Моя статистика", callback_data="my_stats")],
         ]
     )
     if is_admin(user_id):
@@ -1051,8 +1037,33 @@ def get_main_keyboard(user_id: int):
     return kb
 
 
+def device_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Android", callback_data="device_android")],
+            [InlineKeyboardButton(text="iOS", callback_data="device_ios")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main")],
+        ]
+    )
+
+
+async def show_device_menu(target, state: FSMContext):
+    """Общий вход для /renew, /connect и кнопки Купить/Продлить."""
+    await state.set_state(SubscriptionStates.choosing_device)
+    text = "Выберите устройство:"
+    kb = device_keyboard()
+    if isinstance(target, CallbackQuery):
+        try:
+            await target.message.edit_text(text, reply_markup=kb)
+        except TelegramBadRequest:
+            await target.message.answer(text, reply_markup=kb)
+    else:
+        await target.answer(text, reply_markup=kb)
+
+
 @dp.message(Command("start"))
-async def start_cmd(message: Message):
+async def start_cmd(message: Message, state: FSMContext):
+    await state.clear()
     remaining = await get_user_remaining_days(f"tg{message.from_user.id}")
     text = (
         f"Привет! У тебя осталось <b>{remaining} дней</b> подписки."
@@ -1064,6 +1075,22 @@ async def start_cmd(message: Message):
     )
 
 
+@dp.message(Command("menu"))
+async def menu_cmd(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "Главное меню",
+        reply_markup=get_main_keyboard(message.from_user.id),
+    )
+
+
+@dp.message(Command("renew"))
+@dp.message(Command("connect"))
+async def renew_or_connect_cmd(message: Message, state: FSMContext):
+    await state.clear()
+    await show_device_menu(message, state)
+
+
 @dp.callback_query(F.data == "check_days")
 async def check_days(callback: CallbackQuery):
     await callback.answer()
@@ -1073,21 +1100,62 @@ async def check_days(callback: CallbackQuery):
         if remaining > 0
         else "У тебя пока нет активной подписки."
     )
-    await callback.message.answer(text, parse_mode="HTML")
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="◀️ В меню", callback_data="back_to_main")]]
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "buy_subscription")
 async def choose_device(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
+    await show_device_menu(callback, state)
+
+
+@dp.callback_query(F.data == "my_stats")
+async def my_stats(callback: CallbackQuery):
+    await callback.answer()
+    rows = get_user_payments(callback.from_user.id)
+    if not rows:
+        text = (
+            "📊 <b>Твои платежи</b>\n\n"
+            "Пока нет подтверждённых оплат.\n"
+            "После того как администратор подтвердит оплату — запись появится здесь."
+        )
+    else:
+        lines = ["📊 <b>Твои платежи</b>\n"]
+        for paid_at, amount, duration_days, platform, plan_type, status, created_at in rows:
+            when = paid_at or created_at or "—"
+            if when and len(str(when)) >= 10:
+                when = str(when)[:10]
+            device = platform or plan_type or "—"
+            if device == "mobile":
+                device = "телефон"
+            elif device == "router":
+                device = "роутер"
+            elif device == "android":
+                device = "Android"
+            elif device == "ios":
+                device = "iOS"
+            try:
+                amount_s = f"{int(amount)} ₽"
+            except Exception:
+                amount_s = f"{amount} ₽"
+            lines.append(
+                f"• <b>{when}</b> — {amount_s}, {duration_days} дн., {device}"
+            )
+        text = "\n".join(lines)
+
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Android", callback_data="device_android")],
-            [InlineKeyboardButton(text="iOS", callback_data="device_ios")],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main")],
-        ]
+        inline_keyboard=[[InlineKeyboardButton(text="◀️ В меню", callback_data="back_to_main")]]
     )
-    await callback.message.edit_text("Выберите устройство:", reply_markup=kb)
-    await state.set_state(SubscriptionStates.choosing_device)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "back_to_main")
@@ -1099,12 +1167,16 @@ async def back_to_main(callback: CallbackQuery, state: FSMContext):
             "Главное меню", reply_markup=get_main_keyboard(callback.from_user.id)
         )
     except TelegramBadRequest:
-        pass
+        await callback.message.answer(
+            "Главное меню", reply_markup=get_main_keyboard(callback.from_user.id)
+        )
 
 
 @dp.callback_query(SubscriptionStates.choosing_device)
 async def choose_duration(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
+    if not callback.data.startswith("device_"):
+        return
     device = callback.data.split("_")[1]
     await state.update_data(device=device)
     remaining = await get_user_remaining_days(f"tg{callback.from_user.id}")
@@ -1124,24 +1196,17 @@ async def choose_duration(callback: CallbackQuery, state: FSMContext):
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except TelegramBadRequest:
-        pass
+        await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
     await state.set_state(SubscriptionStates.choosing_duration)
 
 
 @dp.callback_query(F.data == "back_to_device")
 async def back_to_device(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Android", callback_data="device_android")],
-            [InlineKeyboardButton(text="iOS", callback_data="device_ios")],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main")],
-        ]
-    )
     try:
-        await callback.message.edit_text("Выберите устройство:", reply_markup=kb)
+        await callback.message.edit_text("Выберите устройство:", reply_markup=device_keyboard())
     except TelegramBadRequest:
-        pass
+        await callback.message.answer("Выберите устройство:", reply_markup=device_keyboard())
     await state.set_state(SubscriptionStates.choosing_device)
 
 
@@ -1311,10 +1376,11 @@ async def approve_payment(callback: CallbackQuery):
             """
             UPDATE user_subscriptions
             SET end_date = ?, duration_days = COALESCE(duration_days, 0) + ?,
+                preferred_platform = ?,
                 updated_at = datetime('now')
             WHERE id = ?
             """,
-            (new_end, days, sub_id),
+            (new_end, days, preferred_platform, sub_id),
         )
     else:
         start_date = datetime.now().strftime("%Y-%m-%d")
@@ -1327,7 +1393,7 @@ async def approve_payment(callback: CallbackQuery):
             """,
             (db_user_id, plan_type, preferred_platform, start_date, end_date, days),
         )
-        # закрыть pending
+        sub_id = cursor.lastrowid
         cursor.execute(
             """
             UPDATE user_subscriptions SET status = 'cancelled'
@@ -1335,6 +1401,18 @@ async def approve_payment(callback: CallbackQuery):
             """,
             (db_user_id,),
         )
+
+    amount = PRICES.get(days, 0)
+    platform_for_purchase = preferred_platform if preferred_platform in ("android", "ios") else None
+    cursor.execute(
+        """
+        INSERT INTO purchases
+        (user_id, subscription_id, plan_type, chosen_platform,
+         duration_days, amount, currency, payment_provider, status, paid_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'RUB', 'manual', 'paid', datetime('now'))
+        """,
+        (db_user_id, sub_id, plan_type, platform_for_purchase, days, amount),
+    )
 
     conn.commit()
     conn.close()
