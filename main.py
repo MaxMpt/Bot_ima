@@ -456,6 +456,43 @@ def delete_client_everywhere(email: str):
     try:
         conn = sqlite3.connect(DB_NAME, check_same_thread=False)
         cursor = conn.cursor()
+
+        # id пользователей по config_email / tg
+        cursor.execute("SELECT id FROM users WHERE config_email = ?", (email,))
+        ids = [r[0] for r in cursor.fetchall()]
+
+        if email.startswith("tg"):
+            try:
+                tid = int(email[2:])
+                cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (tid,))
+                ids += [r[0] for r in cursor.fetchall()]
+            except ValueError:
+                pass
+
+        ids = list(set(ids))
+        for uid in ids:
+            cursor.execute("DELETE FROM user_subscriptions WHERE user_id = ?", (uid,))
+            cursor.execute("DELETE FROM users WHERE id = ?", (uid,))
+
+        conn.commit()
+        conn.close()
+        log.info("Удалён из БД: %s (users=%s)", email, ids)
+    except Exception as e:
+        log.error("Ошибка удаления из базы: %s", e)
+
+    try:
+        g = gh.Github(auth=gh.Auth.Token(GITHUB_TOKEN))
+        repo = g.get_repo(GITHUB_REPO)
+        file = repo.get_contents(f"{email}.txt")
+        repo.delete_file(f"{email}.txt", f"Delete {email}", file.sha)
+    except Exception:
+        pass
+
+    return deleted
+
+    try:
+        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+        cursor = conn.cursor()
         cursor.execute(
             """
             DELETE FROM user_subscriptions
@@ -635,22 +672,23 @@ def collect_all_emails() -> list:
     emails = set()
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT DISTINCT u.config_email
+    # только с подпиской active/pending
+    cur.execute("""
+        SELECT DISTINCT COALESCE(u.config_email, 'tg' || u.telegram_id)
         FROM users u
         JOIN user_subscriptions us ON us.user_id = u.id
-        WHERE u.config_email IS NOT NULL AND u.config_email != ''
-          AND us.status IN ('active', 'pending')
-        """
-    )
+        WHERE us.status IN ('active', 'pending')
+          AND (
+            (u.config_email IS NOT NULL AND u.config_email != '')
+            OR u.telegram_id > 0
+          )
+    """)
     for (em,) in cur.fetchall():
-        emails.add(em)
-    cur.execute("SELECT telegram_id FROM users WHERE telegram_id > 0")
-    for (tid,) in cur.fetchall():
-        emails.add(f"tg{tid}")
+        if em:
+            emails.add(em)
     conn.close()
 
+    # кто ещё есть на панелях (на случай рассинхрона)
     for server in SERVERS:
         inbound = get_first_inbound(server)
         if not inbound:
