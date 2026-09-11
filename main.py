@@ -157,7 +157,10 @@ def build_openvpn_profile(email: str) -> str:
 
 
 def make_qr_png(payload: str) -> bytes:
-    img = qrcode.make(payload)
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=8, border=2)
+    qr.add_data(payload)
+    qr.make(fit=True)
+    img = qr.make_image()
     buf = BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
@@ -584,23 +587,26 @@ def build_vless_link(server_ip, label, inbound, client_uuid, name):
     )
 
 
-async def update_github_file_completely(name: str, links: list):
+async def update_github_raw(filename: str, content: str, message: str):
     async with github_lock:
         def _update():
             g = gh.Github(auth=gh.Auth.Token(GITHUB_TOKEN))
             repo = g.get_repo(GITHUB_REPO)
-            content = "\n".join(links)
-            filename = f"{name}.txt"
             try:
                 file = repo.get_contents(filename)
-                repo.update_file(filename, f"Update {name}", content, file.sha)
+                repo.update_file(filename, message, content, file.sha)
             except Exception:
-                repo.create_file(filename, f"Create {name}", content)
+                repo.create_file(filename, message, content)
 
         try:
             await asyncio.to_thread(_update)
         except Exception as e:
-            log.error("GitHub error для %s: %s", name, e)
+            log.error("GitHub error для %s: %s", filename, e)
+            raise
+
+
+async def update_github_file_completely(name: str, links: list):
+    await update_github_raw(f"{name}.txt", "\n".join(links), f"Update {name}")
 
 
 # ====================== ДНИ ======================
@@ -1547,33 +1553,24 @@ async def approve_payment(callback: CallbackQuery):
 
     if device == "router":
         profile = build_openvpn_profile(email)
-        qr_bytes = make_qr_png(profile)
+        ovpn_name = f"{email}.ovpn"
         try:
-            await bot.send_message(
-                user_id,
-                f"✅ Оплата подтверждена!\n\n"
-                f"Подписка <b>OpenVPN / роутер</b> на <b>{days} дней</b>.\n"
-                f"Сумма: <b>{int(amount)} ₽</b>\n\n"
-                f"Ниже QR и файл <code>{email}.ovpn</code>.",
-                parse_mode="HTML",
-            )
-            await bot.send_photo(
-                user_id,
-                BufferedInputFile(qr_bytes, filename=f"{email}_openvpn.png"),
-                caption="📱 QR-код OpenVPN для роутера",
-            )
             await bot.send_document(
                 user_id,
-                BufferedInputFile(profile.encode("utf-8"), filename=f"{email}.ovpn"),
-                caption="📄 OpenVPN-профиль",
+                BufferedInputFile(profile.encode("utf-8"), filename=ovpn_name),
+                caption=(
+                    f"✅ Оплата подтверждена\n"
+                    f"OpenVPN / роутер, {days} дн., {int(amount)} ₽\n"
+                    f"Импортируй файл на роутер."
+                ),
             )
             try:
-                await callback.message.edit_text("✅ Подтверждено, OpenVPN QR выдан.")
+                await callback.message.edit_text("✅ Подтверждено, .ovpn отправлен.")
             except TelegramBadRequest:
                 pass
         except Exception as e:
             log.error("send openvpn: %s", e)
-            await callback.message.answer(f"❌ Оплата записана, но QR не ушёл: {e}")
+            await callback.message.answer(f"❌ Оплата записана, но файл не ушёл: {e}")
         return
 
     results = await asyncio.gather(
