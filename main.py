@@ -8,6 +8,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, time as dt_time
 from io import BytesIO
 
+import qrcode
+
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
@@ -65,6 +67,13 @@ SERVERS = [
 
 SESSION = requests.Session()
 PRICES = {30: 219, 90: 599, 365: 2100}
+OPENVPN_PRICE = int(os.getenv("OPENVPN_PRICE", "219"))
+OPENVPN_DISCOUNT_PERCENT = int(os.getenv("OPENVPN_DISCOUNT_PERCENT", "30"))
+OPENVPN_DAYS = int(os.getenv("OPENVPN_DAYS", "30"))
+OPENVPN_REMOTE = os.getenv("OPENVPN_REMOTE", "")
+OPENVPN_PORT = os.getenv("OPENVPN_PORT", "1194")
+OPENVPN_PROTO = os.getenv("OPENVPN_PROTO", "udp")
+OPENVPN_TEMPLATE = os.getenv("OPENVPN_TEMPLATE", "openvpn_template.ovpn")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("vpn_bot")
@@ -88,6 +97,71 @@ class SubscriptionStates(StatesGroup):
 
 def is_admin(user_id: int) -> bool:
     return bool(ADMIN_IDS) and user_id in ADMIN_IDS
+
+
+def calc_openvpn_price(has_active_vless: bool) -> tuple[int, int]:
+    """Возвращает (к оплате, размер скидки в рублях)."""
+    base = OPENVPN_PRICE
+    if not has_active_vless:
+        return base, 0
+    discounted = int(round(base * (100 - OPENVPN_DISCOUNT_PERCENT) / 100))
+    return discounted, base - discounted
+
+
+def has_active_vless(telegram_id: int) -> bool:
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT 1
+        FROM user_subscriptions us
+        JOIN users u ON u.id = us.user_id
+        WHERE u.telegram_id = ?
+          AND us.plan_type = 'mobile'
+          AND us.status = 'active'
+          AND date(us.end_date) >= date('now')
+        LIMIT 1
+        """,
+        (telegram_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return bool(row)
+
+
+def build_openvpn_profile(email: str) -> str:
+    if OPENVPN_TEMPLATE and os.path.isfile(OPENVPN_TEMPLATE):
+        with open(OPENVPN_TEMPLATE, "r", encoding="utf-8") as f:
+            raw = f.read()
+        return (
+            raw.replace("{email}", email)
+            .replace("{remote}", OPENVPN_REMOTE)
+            .replace("{port}", str(OPENVPN_PORT))
+            .replace("{proto}", OPENVPN_PROTO)
+        )
+    remote = OPENVPN_REMOTE or "CHANGE_ME_OPENVPN_HOST"
+    return (
+        "client\n"
+        "dev tun\n"
+        f"proto {OPENVPN_PROTO}\n"
+        f"remote {remote} {OPENVPN_PORT}\n"
+        "resolv-retry infinite\n"
+        "nobind\n"
+        "persist-key\n"
+        "persist-tun\n"
+        "remote-cert-tls server\n"
+        "auth-user-pass\n"
+        f"# username: {email}\n"
+        "verb 3\n"
+    )
+
+
+def make_qr_png(payload: str) -> bytes:
+    img = qrcode.make(payload)
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf.read()
 
 
 def init_db():
@@ -1040,8 +1114,9 @@ def get_main_keyboard(user_id: int):
 def device_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Android", callback_data="device_android")],
-            [InlineKeyboardButton(text="iOS", callback_data="device_ios")],
+            [InlineKeyboardButton(text="Android (VLESS)", callback_data="device_android")],
+            [InlineKeyboardButton(text="iOS (VLESS)", callback_data="device_ios")],
+            [InlineKeyboardButton(text="Роутер (OpenVPN)", callback_data="device_router")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main")],
         ]
     )
@@ -1179,6 +1254,40 @@ async def choose_duration(callback: CallbackQuery, state: FSMContext):
         return
     device = callback.data.split("_")[1]
     await state.update_data(device=device)
+
+    if device == "router":
+        vless_active = has_active_vless(callback.from_user.id)
+        price, discount = calc_openvpn_price(vless_active)
+        lines = [
+            "🛡 <b>OpenVPN для роутера</b>",
+            f"Срок: <b>{OPENVPN_DAYS} дней</b>",
+            f"Базовая цена: <b>{OPENVPN_PRICE} ₽</b>",
+        ]
+        if discount:
+            lines.append(
+                f"Скидка {OPENVPN_DISCOUNT_PERCENT}% за активный VLESS: <b>−{discount} ₽</b>"
+            )
+            lines.append(f"К оплате: <b>{price} ₽</b>")
+        else:
+            lines.append("Скидка 30% действует только при активном VLESS.")
+            lines.append(f"К оплате: <b>{price} ₽</b>")
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text=f"Оформить за {price} ₽",
+                    callback_data=f"duration_{OPENVPN_DAYS}",
+                )],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_device")],
+            ]
+        )
+        text = "\n".join(lines)
+        try:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        except TelegramBadRequest:
+            await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+        await state.set_state(SubscriptionStates.choosing_duration)
+        return
+
     remaining = await get_user_remaining_days(f"tg{callback.from_user.id}")
     text = (
         f"⚠️ У тебя осталось <b>{remaining} дней</b>.\n\nВыберите срок продления:"
@@ -1214,11 +1323,17 @@ async def back_to_device(callback: CallbackQuery, state: FSMContext):
 async def create_order(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     days = int(callback.data.split("_")[1])
-    price = PRICES.get(days, 0)
     data = await state.get_data()
     device = data.get("device", "android")
     user_id = callback.from_user.id
     username = callback.from_user.username or f"user{user_id}"
+    if device == "router":
+        price, discount = calc_openvpn_price(has_active_vless(user_id))
+        proto_label = "OpenVPN / роутер"
+    else:
+        price = PRICES.get(days, 0)
+        discount = 0
+        proto_label = f"VLESS / {device}"
     email = await create_subscription(user_id, username, days, device)
 
     kb = InlineKeyboardMarkup(
@@ -1227,13 +1342,16 @@ async def create_order(callback: CallbackQuery, state: FSMContext):
             [
                 InlineKeyboardButton(
                     text="✅ Я оплатил",
-                    callback_data=f"paid_{user_id}_{days}_{email}_{device}",
+                    callback_data=f"paid_{user_id}_{days}_{email}_{device}_{price}",
                 )
             ],
         ]
     )
+    extra = f"\nСкидка: <b>−{discount} ₽</b>" if discount else ""
     await callback.message.edit_text(
-        f"✅ Заявка создана!\n\nСумма: <b>{price} ₽</b> за <b>{days} дней</b>\n\n"
+        f"✅ Заявка создана!\n\n"
+        f"{proto_label}\n"
+        f"Сумма: <b>{price} ₽</b> за <b>{days} дней</b>{extra}\n\n"
         f"Оплати и нажми «Я оплатил».",
         reply_markup=kb,
         parse_mode="HTML",
@@ -1247,7 +1365,7 @@ async def create_order(callback: CallbackQuery, state: FSMContext):
                 f"🆕 <b>Новая заявка!</b>\n\n"
                 f"@{username} | <code>{user_id}</code>\n"
                 f"Конфиг: <code>{email}</code>\n"
-                f"{device} | {days} дн. | {price} ₽",
+                f"{proto_label} | {days} дн. | {price} ₽",
                 parse_mode="HTML",
             )
         except Exception:
@@ -1262,14 +1380,18 @@ async def user_confirmed_payment(callback: CallbackQuery):
     days = int(parts[2])
     email = parts[3]
     device = parts[4] if len(parts) > 4 else "android"
+    price = int(parts[5]) if len(parts) > 5 else (
+        calc_openvpn_price(has_active_vless(user_id))[0] if device == "router" else PRICES.get(days, 0)
+    )
     username = callback.from_user.username or f"user{user_id}"
+    proto_label = "OpenVPN / роутер" if device == "router" else f"VLESS / {device}"
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="✅ Подтвердить оплату",
-                    callback_data=f"approve_{user_id}_{days}_{email}_{device}",
+                    callback_data=f"approve_{user_id}_{days}_{email}_{device}_{price}",
                 )
             ],
             [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{user_id}_{email}")],
@@ -1283,7 +1405,7 @@ async def user_confirmed_payment(callback: CallbackQuery):
                 admin_id,
                 f"💰 Подтверждение оплаты\n\n"
                 f"@{username} <code>{user_id}</code>\n"
-                f"<code>{email}</code> | {days} дн. | {device}",
+                f"<code>{email}</code> | {days} дн. | {proto_label} | {price} ₽",
                 parse_mode="HTML",
                 reply_markup=kb,
             )
@@ -1334,6 +1456,7 @@ async def approve_payment(callback: CallbackQuery):
     days = int(data[2])
     email = data[3]
     device = data[4] if len(data) > 4 else "ios"
+    locked_price = int(data[5]) if len(data) > 5 else None
 
     await _delete_payment_notifications(email)
 
@@ -1402,7 +1525,12 @@ async def approve_payment(callback: CallbackQuery):
             (db_user_id,),
         )
 
-    amount = PRICES.get(days, 0)
+    if locked_price is not None:
+        amount = locked_price
+    elif device == "router":
+        amount, _ = calc_openvpn_price(has_active_vless(user_id))
+    else:
+        amount = PRICES.get(days, 0)
     platform_for_purchase = preferred_platform if preferred_platform in ("android", "ios") else None
     cursor.execute(
         """
@@ -1416,6 +1544,37 @@ async def approve_payment(callback: CallbackQuery):
 
     conn.commit()
     conn.close()
+
+    if device == "router":
+        profile = build_openvpn_profile(email)
+        qr_bytes = make_qr_png(profile)
+        try:
+            await bot.send_message(
+                user_id,
+                f"✅ Оплата подтверждена!\n\n"
+                f"Подписка <b>OpenVPN / роутер</b> на <b>{days} дней</b>.\n"
+                f"Сумма: <b>{int(amount)} ₽</b>\n\n"
+                f"Ниже QR и файл <code>{email}.ovpn</code>.",
+                parse_mode="HTML",
+            )
+            await bot.send_photo(
+                user_id,
+                BufferedInputFile(qr_bytes, filename=f"{email}_openvpn.png"),
+                caption="📱 QR-код OpenVPN для роутера",
+            )
+            await bot.send_document(
+                user_id,
+                BufferedInputFile(profile.encode("utf-8"), filename=f"{email}.ovpn"),
+                caption="📄 OpenVPN-профиль",
+            )
+            try:
+                await callback.message.edit_text("✅ Подтверждено, OpenVPN QR выдан.")
+            except TelegramBadRequest:
+                pass
+        except Exception as e:
+            log.error("send openvpn: %s", e)
+            await callback.message.answer(f"❌ Оплата записана, но QR не ушёл: {e}")
+        return
 
     results = await asyncio.gather(
         *[asyncio.to_thread(create_or_extend_client, s, email, days) for s in SERVERS],
