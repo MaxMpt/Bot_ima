@@ -58,10 +58,10 @@ SERVERS = [
         "token": "G90Xn0b6bMlWVinRVdxef569nO6zJhvplb6XJmQP0yNlITQM",
     },
     {
-        "ip": "89.40.70.124",
+        "ip": "89.127.216.177",
         "label": "Amsterdam-2.1",
-        "url": "http://89.40.70.124:45903/OY02850ZgFN4LJMaCE/panel/api",
-        "token": "VqWD9uwHKZqX2xtObIhlcOw4oPcrA2lR6JeTSkfmLO4z1DE4",
+        "url": "https://89.127.216.177:32240/9XgoonLoQz0qQ3yQv5/panel/api",
+        "token": "KMeGGaWKe6kNnIJ2NIRdgGzJCr16gItPUst64UY24Y2thJb1",
     },
 ]
 
@@ -1171,7 +1171,7 @@ def device_keyboard():
         inline_keyboard=[
             [InlineKeyboardButton(text="Android (VLESS)", callback_data="device_android")],
             [InlineKeyboardButton(text="iOS (VLESS)", callback_data="device_ios")],
-            [InlineKeyboardButton(text="Роутер (OpenVPN)", callback_data="device_router")],
+            # [InlineKeyboardButton(text="Роутер (OpenVPN)", callback_data="device_router")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main")],
         ]
     )
