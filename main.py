@@ -705,6 +705,55 @@ async def get_user_remaining_days(email: str) -> int:
     return max(0, remaining or 0)
 
 
+def get_active_plans(telegram_id: int) -> dict:
+    """Дни и дата окончания по каждому типу подписки."""
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT us.plan_type, us.end_date
+        FROM user_subscriptions us
+        JOIN users u ON u.id = us.user_id
+        WHERE u.telegram_id = ?
+          AND us.status = 'active'
+        """,
+        (telegram_id,),
+    )
+    plans = {"mobile": None, "router": None}
+    today = datetime.now().date()
+    for plan_type, end_date in cur.fetchall():
+        days = 0
+        end_s = ""
+        if end_date:
+            try:
+                end = datetime.strptime(str(end_date).split()[0], "%Y-%m-%d").date()
+                days = max(0, (end - today).days)
+                end_s = end.strftime("%d.%m.%Y")
+            except Exception:
+                days = 0
+        plans[plan_type] = {"days": days, "end": end_s}
+    conn.close()
+    return plans
+
+
+def format_subscription_status(telegram_id: int) -> str:
+    plans = get_active_plans(telegram_id)
+    lines = []
+    mobile = plans.get("mobile")
+    router = plans.get("router")
+    if mobile and mobile["days"] > 0:
+        extra = f" (до {mobile['end']})" if mobile["end"] else ""
+        lines.append(f"VLESS: <b>{mobile['days']} дн.</b>{extra}")
+    else:
+        lines.append("VLESS: нет активной подписки")
+    if router and router["days"] > 0:
+        extra = f" (до {router['end']})" if router["end"] else ""
+        lines.append(f"OpenVPN / роутер: <b>{router['days']} дн.</b>{extra}")
+    else:
+        lines.append("OpenVPN / роутер: нет активной подписки")
+    return "\n".join(lines)
+
+
 def get_user_payments(telegram_id: int) -> list:
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cursor = conn.cursor()
@@ -1145,12 +1194,7 @@ async def show_device_menu(target, state: FSMContext):
 @dp.message(Command("start"))
 async def start_cmd(message: Message, state: FSMContext):
     await state.clear()
-    remaining = await get_user_remaining_days(f"tg{message.from_user.id}")
-    text = (
-        f"Привет! У тебя осталось <b>{remaining} дней</b> подписки."
-        if remaining > 0
-        else "Привет! У тебя пока нет активной подписки."
-    )
+    text = "Привет!\n" + format_subscription_status(message.from_user.id)
     await message.answer(
         text, reply_markup=get_main_keyboard(message.from_user.id), parse_mode="HTML"
     )
@@ -1175,12 +1219,7 @@ async def renew_or_connect_cmd(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "check_days")
 async def check_days(callback: CallbackQuery):
     await callback.answer()
-    remaining = await get_user_remaining_days(f"tg{callback.from_user.id}")
-    text = (
-        f"У тебя осталось <b>{remaining} дней</b> подписки."
-        if remaining > 0
-        else "У тебя пока нет активной подписки."
-    )
+    text = "📅 <b>Подписки</b>\n\n" + format_subscription_status(callback.from_user.id)
     kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="◀️ В меню", callback_data="back_to_main")]]
     )
@@ -1200,35 +1239,30 @@ async def choose_device(callback: CallbackQuery, state: FSMContext):
 async def my_stats(callback: CallbackQuery):
     await callback.answer()
     rows = get_user_payments(callback.from_user.id)
+    lines = ["📊 <b>Статус</b>", format_subscription_status(callback.from_user.id), "", "📊 <b>Платежи</b>"]
     if not rows:
-        text = (
-            "📊 <b>Твои платежи</b>\n\n"
-            "Пока нет подтверждённых оплат.\n"
-            "После того как администратор подтвердит оплату — запись появится здесь."
-        )
+        lines.append("Пока нет подтверждённых оплат.")
     else:
-        lines = ["📊 <b>Твои платежи</b>\n"]
         for paid_at, amount, duration_days, platform, plan_type, status, created_at in rows:
             when = paid_at or created_at or "—"
             if when and len(str(when)) >= 10:
                 when = str(when)[:10]
-            device = platform or plan_type or "—"
-            if device == "mobile":
-                device = "телефон"
-            elif device == "router":
-                device = "роутер"
-            elif device == "android":
-                device = "Android"
-            elif device == "ios":
-                device = "iOS"
+            if plan_type == "router":
+                device = "OpenVPN / роутер"
+            elif platform == "android":
+                device = "VLESS / Android"
+            elif platform == "ios":
+                device = "VLESS / iOS"
+            elif plan_type == "mobile":
+                device = "VLESS"
+            else:
+                device = platform or plan_type or "—"
             try:
                 amount_s = f"{int(amount)} ₽"
             except Exception:
                 amount_s = f"{amount} ₽"
-            lines.append(
-                f"• <b>{when}</b> — {amount_s}, {duration_days} дн., {device}"
-            )
-        text = "\n".join(lines)
+            lines.append(f"• <b>{when}</b> — {amount_s}, {duration_days} дн., {device}")
+    text = "\n".join(lines)
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="◀️ В меню", callback_data="back_to_main")]]
