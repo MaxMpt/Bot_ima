@@ -821,7 +821,7 @@ async def notify_expiring_subscriptions():
                 WHERE us.status = 'active'
                   AND u.is_temp = 0
                   AND u.telegram_id > 0
-                  AND date(us.end_date) <= date('now', '+1 day')
+                  AND date(us.end_date) <= date('now', '+3 day')
                 """
             )
             expiring = cursor.fetchall()
