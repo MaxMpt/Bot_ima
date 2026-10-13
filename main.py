@@ -48,20 +48,20 @@ DB_NAME = os.getenv("DB_NAME", "vpn_bot.db")
 TINKOFF_COLLECTION_LINK = os.getenv("TINKOFF_COLLECTION_LINK", "https://tbank.ru/cf/1W5S3zUX13t")
 MASS_CONCURRENCY = int(os.getenv("MASS_CONCURRENCY", "6"))
 
-LIMIT_IP = 2
+LIMIT_IP = 0
 
 SERVERS = [
     {
-        "ip": "89.127.211.136",
+        "ip": "199.195.197.11",
         "label": "Amsterdam-1.1",
-        "url": "http://89.127.211.136:16233/SN0fWL3d9jHYRGNnno/panel/api",
-        "token": "U1AIuUUK9o1mhsCqKlKCJHZXn8EwzQJiqmfacfm9PgWM5kbB",
+        "url": "https://199.195.197.11:38618/KnNfYss5RipgztxN5q/panel/api",
+        "token": "lkRBSQbMmhWGJZYIJCrigpJFC5M2oeihYRcPUwRrUt9QylOw",
     },
     {
-        "ip": "89.127.216.177",
+        "ip": "89.127.211.136",
         "label": "Amsterdam-2.1",
-        "url": "https://89.127.216.177:32240/9XgoonLoQz0qQ3yQv5/panel/api",
-        "token": "KMeGGaWKe6kNnIJ2NIRdgGzJCr16gItPUst64UY24Y2thJb1",
+        "url": "http://89.127.211.136:16233/SN0fWL3d9jHYRGNnno/panel/api",
+        "token": "U1AIuUUK9o1mhsCqKlKCJHZXn8EwzQJiqmfacfm9PgWM5kbB",
     },
 ]
 
