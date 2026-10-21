@@ -57,13 +57,6 @@ SERVERS = [
         "url": "https://93.89.223.35:60082/r9goYgHrAhDgcPPmx9/panel/api",
         "token": "tmb4pU9kga6l8GQ2z7GLQb01pku1b1ZfNRFIZO4NmgzMAPh7",
     },
-    {
-        "ip": "188.116.27.6",
-        "label": "Amsterdam-3.1",
-        "url": "https://188.116.27.6:14326/7ZrdcnajqKPWSh4N4A/panel/api",
-        "token": "xtfeBhBz0jXzKClHdK5DNW2yH0DePf7ZkqJgyVBXx29SwvQ6",
-    },
-
 ]
 
 SESSION = requests.Session()
