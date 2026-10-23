@@ -52,6 +52,12 @@ LIMIT_IP = 0
 
 SERVERS = [
     {
+        "ip": "217.147.13.194",
+        "label": "Server-1",
+        "url": "http://217.147.13.194:34302/TO9VJGgYuqb48PNTtU/panel/api",
+        "token": "iKwAyYrGhLJlL4a8cbAxXN9UrbA0DZ6R4ZOmQkofmTb8hFcM",
+    },
+    {
         "ip": "93.89.223.35",
         "label": "Amsterdam-2.1",
         "url": "https://93.89.223.35:60082/r9goYgHrAhDgcPPmx9/panel/api",
