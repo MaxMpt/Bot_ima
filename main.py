@@ -52,17 +52,18 @@ LIMIT_IP = 0
 
 SERVERS = [
     {
+        "ip": "78.17.198.95",
+        "label": "Amsterdam-1",
+        "url": "http://78.17.198.95:6456/HzT2D9CBWBRmlZhWCT/panel/api",
+        "token": "9jSX7OzQseL4cayvoC2ts1yPDwnZ5EG7WLKfCgaJzYv6pn8y",
+    },
+    {
         "ip": "217.147.13.194",
         "label": "Server-1",
         "url": "http://217.147.13.194:34302/TO9VJGgYuqb48PNTtU/panel/api",
         "token": "iKwAyYrGhLJlL4a8cbAxXN9UrbA0DZ6R4ZOmQkofmTb8hFcM",
     },
-    {
-        "ip": "93.89.223.35",
-        "label": "Amsterdam-2.1",
-        "url": "https://93.89.223.35:60082/r9goYgHrAhDgcPPmx9/panel/api",
-        "token": "tmb4pU9kga6l8GQ2z7GLQb01pku1b1ZfNRFIZO4NmgzMAPh7",
-    },
+
 ]
 
 SESSION = requests.Session()
