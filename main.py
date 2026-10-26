@@ -52,8 +52,14 @@ LIMIT_IP = 0
 
 SERVERS = [
     {
-        "ip": "78.17.198.95",
+        "ip": "188.116.27.6",
         "label": "Amsterdam-1",
+        "url": "http://188.116.27.6:33235/Cxa7752QYElwPw8XM9/panel/api",
+        "token": "jlRDRFMLeZWCGAffvdWQ505GLSCK5X9GyNjqpQMr327gU2Gi",
+    },
+    {
+        "ip": "78.17.198.95",
+        "label": "Amsterdam-2",
         "url": "http://78.17.198.95:6456/HzT2D9CBWBRmlZhWCT/panel/api",
         "token": "9jSX7OzQseL4cayvoC2ts1yPDwnZ5EG7WLKfCgaJzYv6pn8y",
     },
