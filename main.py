@@ -52,10 +52,10 @@ LIMIT_IP = 0
 
 SERVERS = [
     {
-        "ip": "208.123.190.136",
-        "label": "Finland",
-        "url": "http://208.123.190.136:14482/1ZW4XNFbLGI1ytTjVq/panel/api",
-        "token": "8duwTvu1SrL3xaoVKilnOHJGtzDpfzAoXaDLSskAMP89zYnp",
+        "ip": "168.113.175.139",
+        "label": "RUSSIA-AMERICA",
+        "url": "http://168.113.175.139:51571/jbzUnDPaFbhta7AlZb/panel/api",
+        "token": "AXedmSOk86XTpHt0SNZw4Nq4JeYhkTmZVUywEru7REWcLGKW",
     },
     {
         "ip": "188.116.27.6",
