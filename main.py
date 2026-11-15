@@ -52,12 +52,17 @@ LIMIT_IP = 0
 
 SERVERS = [
     {
-        "ip": "168.113.175.139",
+        "ip": "103.31.78.112",
         "label": "RUSSIA-AMERICA",
-        "url": "http://168.113.175.139:51571/jbzUnDPaFbhta7AlZb/panel/api",
-        "token": "AXedmSOk86XTpHt0SNZw4Nq4JeYhkTmZVUywEru7REWcLGKW",
-    },
-
+        "url": "http://103.31.78.112:43880/bflzK9MwCgZDgFX2Tb/panel/api",
+        "token": "PTmkhu4HyVZxJgMoO3sadjN0wxkl2ss35nUV9VJpadimh9F8",
+     },
+    # {
+    #     "ip": "168.113.175.139",
+    #     "label": "RUSSIA-OLD",
+    #     "url": "http://168.113.175.139:51571/jbzUnDPaFbhta7AlZb/panel/api",
+    #     "token": "AXedmSOk86XTpHt0SNZw4Nq4JeYhkTmZVUywEru7REWcLGKW",
+    # },
 ]
 
 SESSION = requests.Session()
